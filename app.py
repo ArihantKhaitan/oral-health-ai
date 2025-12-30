@@ -16,8 +16,6 @@ os.environ["TF_USE_LEGACY_KERAS"] = "1"
 
 import streamlit as st
 import tensorflow as tf
-import streamlit as st
-import tensorflow as tf
 import numpy as np
 from PIL import Image
 import json
