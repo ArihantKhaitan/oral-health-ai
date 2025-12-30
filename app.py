@@ -487,7 +487,7 @@ def main():
         
         with col1:
             st.markdown("### 📷 Your Image")
-            st.image(image, use_container_width=True)
+            st.image(image, use_column_width=True)
         
         with col2:
             st.markdown(f"### {t['results']}")
@@ -547,7 +547,7 @@ def main():
             if heatmap is not None:
                 img_array = np.array(image.resize((224, 224)))
                 gradcam_img = overlay_gradcam(img_array, heatmap)
-                st.image(gradcam_img, use_container_width=True)
+                st.image(gradcam_img, use_column_width=True)
             else:
                 st.info("GradCAM visualization not available for this prediction.")
         except:
@@ -559,7 +559,7 @@ def main():
     st.link_button(
         t['find_dentist'],
         "https://www.google.com/maps/search/dentist+near+me",
-        use_container_width=True
+        use_column_width=True
     )
     
     # Disclaimer - More visible
