@@ -210,7 +210,13 @@ def load_model():
     model_path = 'model/oral_disease_model.h5'
     if os.path.exists(model_path):
         try:
-            model = tf.keras.models.load_model(model_path, compile=False)
+            # Try loading with compile=False to avoid optimizer issues
+            model = tf.keras.models.load_model(
+                model_path, 
+                compile=False,
+                custom_objects=None
+            )
+            # Recompile with fresh optimizer
             model.compile(
                 optimizer='adam',
                 loss='categorical_crossentropy',
@@ -218,8 +224,28 @@ def load_model():
             )
             return model
         except Exception as e:
-            st.error(f"Error loading model: {e}")
-            return None
+            # If that fails, try loading weights only approach
+            try:
+                from tensorflow.keras.applications import EfficientNetB0
+                from tensorflow.keras import layers, Model
+                
+                # Recreate the model architecture
+                base_model = EfficientNetB0(weights=None, include_top=False, input_shape=(224, 224, 3))
+                x = layers.GlobalAveragePooling2D()(base_model.output)
+                x = layers.BatchNormalization()(x)
+                x = layers.Dropout(0.3)(x)
+                x = layers.Dense(256, activation='relu')(x)
+                x = layers.BatchNormalization()(x)
+                x = layers.Dropout(0.5)(x)
+                outputs = layers.Dense(8, activation='softmax')(x)
+                model = Model(inputs=base_model.input, outputs=outputs)
+                
+                # Load weights
+                model.load_weights(model_path)
+                return model
+            except Exception as e2:
+                st.error(f"Error loading model: {e2}")
+                return None
     else:
         st.error(f"Model not found at {model_path}")
         return None
