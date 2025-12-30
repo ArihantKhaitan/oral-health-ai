@@ -1,558 +1,1018 @@
 """
-🦷 Oral Health AI - Early Detection Saves Lives
-A comprehensive oral disease screening tool powered by AI
+🦷 Oral Health AI - Premium Edition
+A comprehensive AI-powered oral disease screening application
+Version: 2.0.0
+Author: Arihant
 
 Features:
-- 8-class oral disease detection
-- GradCAM visualization
-- Risk assessment questionnaire  
+- 8-class oral disease detection using EfficientNetB0
+- Real-time image analysis with confidence scores
+- GradCAM heatmap visualization
+- Comprehensive disease information database
+- Risk assessment questionnaire
 - Multi-language support (English + Hindi)
-- Disease information and treatment suggestions
-- Professional medical-grade UI
+- Professional medical-grade UI/UX
+- Mobile responsive design
 """
 
+# ============================================
+# IMPORTS AND CONFIGURATION
+# ============================================
 import os
+import sys
+
+# Set environment variables before importing TensorFlow
 os.environ["TF_USE_LEGACY_KERAS"] = "1"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 import streamlit as st
-import tensorflow as tf
 import numpy as np
 from PIL import Image
 import json
-import cv2
+import warnings
+warnings.filterwarnings('ignore')
+
+# Import TensorFlow
+try:
+    import tensorflow as tf
+    TF_AVAILABLE = True
+except ImportError:
+    TF_AVAILABLE = False
+
+# Import OpenCV for heatmap
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError:
+    CV2_AVAILABLE = False
 
 # ============================================
-# PAGE CONFIGURATION
+# PAGE CONFIGURATION - MUST BE FIRST
 # ============================================
 st.set_page_config(
-    page_title="Oral Health AI - मौखिक स्वास्थ्य AI",
+    page_title="Oral Health AI",
     page_icon="🦷",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
+    menu_items={
+        'Get Help': 'https://github.com/ArihantKhaitan/oral-health-ai',
+        'Report a bug': 'https://github.com/ArihantKhaitan/oral-health-ai/issues',
+        'About': 'Oral Health AI - Early Detection Saves Lives'
+    }
 )
 
 # ============================================
-# CUSTOM CSS - PROFESSIONAL MEDICAL UI
+# SESSION STATE INITIALIZATION
 # ============================================
-st.markdown("""
-<style>
-    /* Import Google Font */
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-    
-    /* Global styles */
-    .stApp {
-        font-family: 'Inter', sans-serif;
+def init_session_state():
+    """Initialize all session state variables"""
+    defaults = {
+        'analysis_complete': False,
+        'current_image': None,
+        'prediction_result': None,
+        'confidence_scores': None,
+        'selected_class': None,
+        'risk_factors': {
+            'tobacco': False,
+            'paan': False,
+            'smoke': False,
+            'alcohol': False
+        },
+        'language': 'en',
+        'show_all_scores': False,
+        'image_analyzed': False
     }
-    
-    /* Main header */
-    .main-header {
-        font-size: 2.8rem;
-        font-weight: 700;
-        text-align: center;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin-bottom: 0.3rem;
-    }
-    .sub-header {
-        font-size: 1.1rem;
-        text-align: center;
-        color: #6c757d;
-        margin-bottom: 1.5rem;
-    }
-    
-    /* Section headers */
-    .section-header {
-        font-size: 1.4rem;
-        font-weight: 600;
-        color: #2c3e50;
-        margin: 25px 0 15px 0;
-        padding-bottom: 10px;
-        border-bottom: 3px solid #667eea;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-    }
-    
-    /* Step indicator */
-    .step-badge {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        padding: 5px 15px;
-        border-radius: 20px;
-        font-size: 0.85rem;
-        font-weight: 600;
-    }
-    
-    /* Result cards */
-    .result-card {
-        padding: 25px;
-        border-radius: 15px;
-        margin: 15px 0;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-    }
-    .result-danger {
-        background: linear-gradient(135deg, #fff5f5 0%, #fee2e2 100%);
-        border-left: 6px solid #ef4444;
-    }
-    .result-warning {
-        background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);
-        border-left: 6px solid #f59e0b;
-    }
-    .result-success {
-        background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
-        border-left: 6px solid #22c55e;
-    }
-    
-    .result-title {
-        font-size: 1.5rem;
-        font-weight: 700;
-        margin-bottom: 10px;
-    }
-    .result-danger .result-title { color: #dc2626; }
-    .result-warning .result-title { color: #d97706; }
-    .result-success .result-title { color: #16a34a; }
-    
-    /* Confidence meter */
-    .confidence-container {
-        background: #f1f5f9;
-        border-radius: 10px;
-        padding: 15px;
-        margin: 15px 0;
-    }
-    .confidence-label {
-        font-weight: 600;
-        color: #475569;
-        margin-bottom: 8px;
-    }
-    .confidence-value {
-        font-size: 2rem;
-        font-weight: 700;
-    }
-    .conf-high { color: #dc2626; }
-    .conf-medium { color: #d97706; }
-    .conf-low { color: #16a34a; }
-    
-    /* Disease info card */
-    .disease-info {
-        background: #f8fafc;
-        border-radius: 12px;
-        padding: 20px;
-        margin: 15px 0;
-        border: 1px solid #e2e8f0;
-    }
-    .disease-info h4 {
-        color: #334155;
-        margin-bottom: 10px;
-        font-size: 1.1rem;
-    }
-    .disease-info ul {
-        margin: 0;
-        padding-left: 20px;
-        color: #64748b;
-    }
-    .disease-info li {
-        margin: 5px 0;
-    }
-    
-    /* Risk assessment card */
-    .risk-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 20px;
-        border-radius: 15px;
-        color: white;
-        margin: 10px 0;
-    }
-    .risk-card label {
-        color: white !important;
-    }
-    
-    /* Disclaimer - VERY VISIBLE */
-    .disclaimer-box {
-        background: linear-gradient(135deg, #fef9c3 0%, #fef08a 100%);
-        border: 2px solid #eab308;
-        border-radius: 12px;
-        padding: 20px;
-        margin: 25px 0;
-        box-shadow: 0 4px 15px rgba(234, 179, 8, 0.3);
-    }
-    .disclaimer-box h4 {
-        color: #a16207;
-        margin: 0 0 10px 0;
-        font-size: 1.1rem;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-    }
-    .disclaimer-box p {
-        color: #854d0e;
-        margin: 0;
-        font-size: 0.95rem;
-        line-height: 1.6;
-    }
-    
-    /* Image container */
-    .image-container {
-        border: 2px dashed #cbd5e1;
-        border-radius: 15px;
-        padding: 10px;
-        background: #f8fafc;
-    }
-    
-    /* Heatmap section */
-    .heatmap-section {
-        background: #fefce8;
-        border-radius: 12px;
-        padding: 15px;
-        margin: 15px 0;
-        border: 1px solid #fde047;
-    }
-    
-    /* Find dentist button */
-    .dentist-btn {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        padding: 15px 30px;
-        border-radius: 10px;
-        text-decoration: none;
-        display: inline-block;
-        font-weight: 600;
-        text-align: center;
-        width: 100%;
-        margin: 10px 0;
-        transition: transform 0.2s;
-    }
-    .dentist-btn:hover {
-        transform: translateY(-2px);
-        color: white;
-    }
-    
-    /* Sidebar styling */
-    .sidebar-metric {
-        background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
-        padding: 15px;
-        border-radius: 10px;
-        margin: 10px 0;
-        border-left: 4px solid #0ea5e9;
-    }
-    .sidebar-metric-value {
-        font-size: 1.8rem;
-        font-weight: 700;
-        color: #0369a1;
-    }
-    .sidebar-metric-label {
-        font-size: 0.85rem;
-        color: #64748b;
-    }
-    
-    /* Risk level badges */
-    .risk-badge {
-        padding: 8px 16px;
-        border-radius: 20px;
-        font-weight: 600;
-        font-size: 0.9rem;
-        display: inline-block;
-        margin: 5px 0;
-    }
-    .risk-high { background: #fee2e2; color: #dc2626; }
-    .risk-medium { background: #fef3c7; color: #d97706; }
-    .risk-low { background: #dcfce7; color: #16a34a; }
-    
-    /* Hide Streamlit branding */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-    
-    /* Custom button */
-    .stButton>button {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        font-weight: 600;
-        padding: 0.6rem 1.2rem;
-        border-radius: 10px;
-        border: none;
-        width: 100%;
-        transition: all 0.3s;
-    }
-    .stButton>button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
-    }
-    
-    /* Checkbox styling */
-    .stCheckbox {
-        background: rgba(255,255,255,0.1);
-        padding: 10px;
-        border-radius: 8px;
-        margin: 5px 0;
-    }
-</style>
-""", unsafe_allow_html=True)
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+init_session_state()
+
+# ============================================
+# CUSTOM CSS - PREMIUM UI DESIGN
+# ============================================
+def load_custom_css():
+    """Load custom CSS for premium UI"""
+    st.markdown("""
+    <style>
+        /* ===== GLOBAL STYLES ===== */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+        
+        * {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+        
+        .stApp {
+            background: linear-gradient(180deg, #0f0f1a 0%, #1a1a2e 100%);
+        }
+        
+        /* Hide Streamlit defaults */
+        #MainMenu {visibility: hidden;}
+        footer {visibility: hidden;}
+        header {visibility: hidden;}
+        .stDeployButton {display: none;}
+        
+        /* ===== MAIN HEADER ===== */
+        .main-title {
+            font-size: 3rem;
+            font-weight: 800;
+            text-align: center;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 0.5rem;
+            letter-spacing: -1px;
+        }
+        
+        .main-subtitle {
+            font-size: 1.1rem;
+            text-align: center;
+            color: #a0aec0;
+            margin-bottom: 2rem;
+            font-weight: 400;
+        }
+        
+        /* ===== CARD COMPONENTS ===== */
+        .premium-card {
+            background: linear-gradient(145deg, #1e1e2f 0%, #252540 100%);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 20px;
+            padding: 25px;
+            margin: 15px 0;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        
+        .premium-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 20px 60px rgba(102, 126, 234, 0.2);
+        }
+        
+        /* ===== STEP INDICATORS ===== */
+        .step-container {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .step-number {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1.1rem;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        .step-title {
+            font-size: 1.4rem;
+            font-weight: 700;
+            color: #e2e8f0;
+            margin: 0;
+        }
+        
+        /* ===== RESULT CARDS ===== */
+        .result-card-danger {
+            background: linear-gradient(145deg, #2d1f1f 0%, #3d2020 100%);
+            border: 2px solid #ef4444;
+            border-radius: 20px;
+            padding: 25px;
+            margin: 15px 0;
+        }
+        
+        .result-card-warning {
+            background: linear-gradient(145deg, #2d2a1f 0%, #3d3520 100%);
+            border: 2px solid #f59e0b;
+            border-radius: 20px;
+            padding: 25px;
+            margin: 15px 0;
+        }
+        
+        .result-card-success {
+            background: linear-gradient(145deg, #1f2d1f 0%, #203d20 100%);
+            border: 2px solid #22c55e;
+            border-radius: 20px;
+            padding: 25px;
+            margin: 15px 0;
+        }
+        
+        .result-title {
+            font-size: 1.8rem;
+            font-weight: 700;
+            margin-bottom: 15px;
+        }
+        
+        .result-title-danger { color: #f87171; }
+        .result-title-warning { color: #fbbf24; }
+        .result-title-success { color: #4ade80; }
+        
+        /* ===== CONFIDENCE SCORE ===== */
+        .confidence-box {
+            background: rgba(0,0,0,0.3);
+            border-radius: 15px;
+            padding: 20px;
+            margin: 15px 0;
+            text-align: center;
+        }
+        
+        .confidence-label {
+            font-size: 0.9rem;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 5px;
+        }
+        
+        .confidence-value {
+            font-size: 3rem;
+            font-weight: 800;
+        }
+        
+        .conf-high { color: #f87171; }
+        .conf-medium { color: #fbbf24; }
+        .conf-low { color: #4ade80; }
+        
+        /* ===== INFO CARDS ===== */
+        .info-card {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 15px;
+            padding: 20px;
+            height: 100%;
+        }
+        
+        .info-card-title {
+            font-size: 1rem;
+            font-weight: 600;
+            color: #e2e8f0;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .info-card-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        
+        .info-card-list li {
+            color: #94a3b8;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            font-size: 0.9rem;
+        }
+        
+        .info-card-list li:last-child {
+            border-bottom: none;
+        }
+        
+        /* ===== RISK BADGES ===== */
+        .risk-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 20px;
+            border-radius: 30px;
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+        
+        .risk-high {
+            background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+            color: white;
+        }
+        
+        .risk-medium {
+            background: linear-gradient(135deg, #d97706 0%, #b45309 100%);
+            color: white;
+        }
+        
+        .risk-low {
+            background: linear-gradient(135deg, #16a34a 0%, #15803d 100%);
+            color: white;
+        }
+        
+        /* ===== DISCLAIMER BOX ===== */
+        .disclaimer-box {
+            background: linear-gradient(145deg, #422006 0%, #451a03 100%);
+            border: 2px solid #f59e0b;
+            border-radius: 15px;
+            padding: 25px;
+            margin: 30px 0;
+        }
+        
+        .disclaimer-title {
+            color: #fbbf24;
+            font-size: 1.1rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .disclaimer-text {
+            color: #fcd34d;
+            font-size: 0.95rem;
+            line-height: 1.7;
+        }
+        
+        /* ===== SIDEBAR STYLES ===== */
+        .sidebar-metric {
+            background: linear-gradient(145deg, #1e1e2f 0%, #252540 100%);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 15px;
+            padding: 20px;
+            margin: 10px 0;
+            text-align: center;
+        }
+        
+        .sidebar-metric-value {
+            font-size: 2rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        .sidebar-metric-label {
+            font-size: 0.8rem;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 5px;
+        }
+        
+        /* ===== CONDITION LIST ===== */
+        .condition-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 0;
+            color: #e2e8f0;
+            font-size: 0.9rem;
+        }
+        
+        .condition-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+        
+        .dot-red { background: #ef4444; }
+        .dot-orange { background: #f59e0b; }
+        .dot-green { background: #22c55e; }
+        
+        /* ===== BUTTON STYLES ===== */
+        .stButton > button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            padding: 12px 30px;
+            font-weight: 600;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            width: 100%;
+        }
+        
+        .stButton > button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
+        }
+        
+        /* ===== IMAGE CONTAINER ===== */
+        .image-container {
+            background: rgba(0,0,0,0.2);
+            border: 2px solid rgba(255,255,255,0.1);
+            border-radius: 15px;
+            padding: 10px;
+            overflow: hidden;
+        }
+        
+        /* ===== HEATMAP SECTION ===== */
+        .heatmap-container {
+            background: linear-gradient(145deg, #1e1e2f 0%, #252540 100%);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 20px;
+            padding: 25px;
+            margin: 20px 0;
+        }
+        
+        .heatmap-title {
+            font-size: 1.2rem;
+            font-weight: 700;
+            color: #e2e8f0;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .heatmap-description {
+            color: #94a3b8;
+            font-size: 0.9rem;
+            margin-bottom: 20px;
+        }
+        
+        /* ===== FIND DENTIST BUTTON ===== */
+        .dentist-button {
+            display: block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white !important;
+            text-decoration: none;
+            padding: 18px 35px;
+            border-radius: 15px;
+            font-weight: 700;
+            font-size: 1.1rem;
+            text-align: center;
+            transition: all 0.3s ease;
+            margin: 20px 0;
+        }
+        
+        .dentist-button:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 15px 40px rgba(102, 126, 234, 0.4);
+            color: white !important;
+        }
+        
+        /* ===== TABS STYLING ===== */
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 10px;
+            background: transparent;
+        }
+        
+        .stTabs [data-baseweb="tab"] {
+            background: rgba(255,255,255,0.05);
+            border-radius: 10px;
+            padding: 10px 20px;
+            color: #94a3b8;
+        }
+        
+        .stTabs [aria-selected="true"] {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        /* ===== CHECKBOX STYLING ===== */
+        .risk-checkbox {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 10px;
+            padding: 15px;
+            margin: 8px 0;
+        }
+        
+        /* ===== PROGRESS BAR ===== */
+        .stProgress > div > div {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        
+        /* ===== EXPANDER ===== */
+        .streamlit-expanderHeader {
+            background: rgba(255,255,255,0.05);
+            border-radius: 10px;
+        }
+        
+        /* ===== URGENCY BADGE ===== */
+        .urgency-badge {
+            background: rgba(239, 68, 68, 0.2);
+            border: 1px solid #ef4444;
+            color: #fca5a5;
+            padding: 8px 15px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            display: inline-block;
+            margin-top: 10px;
+        }
+        
+        /* ===== SCROLLBAR ===== */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: #1a1a2e;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: #667eea;
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: #764ba2;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+load_custom_css()
 
 # ============================================
 # DISEASE INFORMATION DATABASE
 # ============================================
-DISEASE_INFO = {
-    'en': {
-        'Oral_Cancer': {
-            'name': '⚠️ Oral Cancer Signs Detected',
-            'description': 'Oral cancer is a serious condition where malignant cells form in the tissues of the mouth. Early detection is CRITICAL for survival.',
-            'symptoms': [
-                'White or red patches in mouth',
-                'Non-healing sores or ulcers (>2 weeks)',
-                'Lumps or thickening in cheek',
-                'Difficulty swallowing or chewing',
-                'Numbness in tongue or mouth',
-                'Unexplained bleeding'
-            ],
-            'causes': ['Tobacco use (smoking, chewing)', 'Excessive alcohol', 'HPV infection', 'Sun exposure (lip cancer)', 'Poor nutrition'],
-            'treatment': ['Surgical removal', 'Radiation therapy', 'Chemotherapy', 'Targeted drug therapy'],
-            'urgency': 'IMMEDIATE - See an oncologist within 24-48 hours'
-        },
-        'Ulcers': {
-            'name': 'Mouth Ulcers (Canker Sores)',
-            'description': 'Mouth ulcers are painful sores that appear inside the mouth. Most heal within 1-2 weeks.',
-            'symptoms': [
-                'Painful round/oval sores',
-                'White/yellow center with red border',
-                'Burning sensation before appearance',
-                'Difficulty eating spicy/acidic foods'
-            ],
-            'causes': ['Stress', 'Minor injuries', 'Acidic foods', 'Vitamin deficiencies (B12, iron)', 'Hormonal changes'],
-            'treatment': ['Antiseptic mouthwash', 'Pain-relieving gels', 'Avoid spicy foods', 'Vitamin supplements', 'Salt water rinse'],
-            'urgency': 'Monitor - See dentist if persists >2 weeks'
-        },
-        'Gingivitis': {
-            'name': 'Gingivitis (Gum Disease)',
-            'description': 'Gingivitis is inflammation of the gums, usually caused by bacterial infection. If untreated, it can lead to periodontitis.',
-            'symptoms': [
-                'Red, swollen gums',
-                'Bleeding while brushing/flossing',
-                'Bad breath (halitosis)',
-                'Receding gums',
-                'Tender gums'
-            ],
-            'causes': ['Poor oral hygiene', 'Plaque buildup', 'Smoking', 'Diabetes', 'Certain medications'],
-            'treatment': ['Professional cleaning', 'Improved brushing technique', 'Antibacterial mouthwash', 'Regular flossing', 'Dental checkups'],
-            'urgency': 'Schedule dental visit within 2 weeks'
-        },
-        'Caries': {
-            'name': 'Dental Caries (Cavities)',
-            'description': 'Cavities are permanently damaged areas in teeth that develop into tiny holes. They are among the most common health problems.',
-            'symptoms': [
-                'Toothache or sensitivity',
-                'Pain when eating sweet/hot/cold',
-                'Visible holes in teeth',
-                'Brown/black staining',
-                'Bad breath'
-            ],
-            'causes': ['Frequent snacking', 'Sugary drinks', 'Poor brushing', 'Dry mouth', 'Bacteria in mouth'],
-            'treatment': ['Dental fillings', 'Crowns (severe cases)', 'Root canal (deep decay)', 'Fluoride treatments', 'Tooth extraction (extreme)'],
-            'urgency': 'Schedule dental visit within 1-2 weeks'
-        },
-        'Calculus': {
-            'name': 'Calculus (Tartar)',
-            'description': 'Calculus is hardite tartar buildup on teeth. It cannot be removed by regular brushing and requires professional cleaning.',
-            'symptoms': [
-                'Yellow/brown deposits on teeth',
-                'Rough feeling on teeth',
-                'Bad breath',
-                'Gum irritation',
-                'Bleeding gums'
-            ],
-            'causes': ['Poor oral hygiene', 'Not flossing', 'Smoking', 'Dry mouth', 'Diet high in sugar/starch'],
-            'treatment': ['Professional scaling', 'Root planing', 'Improved oral hygiene', 'Regular dental cleanings', 'Electric toothbrush'],
-            'urgency': 'Schedule dental cleaning within 1 month'
-        },
-        'Tooth Discoloration': {
-            'name': 'Tooth Discoloration',
-            'description': 'Tooth discoloration refers to staining or changes in tooth color. It can be extrinsic (surface) or intrinsic (internal).',
-            'symptoms': [
-                'Yellow or brown teeth',
-                'White spots on teeth',
-                'Gray or dark teeth',
-                'Uneven coloring'
-            ],
-            'causes': ['Coffee, tea, wine', 'Tobacco use', 'Poor hygiene', 'Medications', 'Aging', 'Fluorosis'],
-            'treatment': ['Professional whitening', 'Whitening toothpaste', 'Dental veneers', 'Bonding', 'Better oral hygiene'],
-            'urgency': 'Non-urgent - Cosmetic concern'
-        },
-        'Hypodontia': {
-            'name': 'Hypodontia (Missing Teeth)',
-            'description': 'Hypodontia is a condition where one or more teeth fail to develop. It can affect appearance and dental function.',
-            'symptoms': [
-                'Gaps in teeth',
-                'Difficulty chewing',
-                'Speech problems',
-                'Jawbone issues',
-                'Self-esteem concerns'
-            ],
-            'causes': ['Genetic factors', 'Developmental issues', 'Trauma', 'Infection during development'],
-            'treatment': ['Dental implants', 'Bridges', 'Partial dentures', 'Orthodontic treatment', 'Space maintainers'],
-            'urgency': 'Non-urgent - Consult dentist for options'
-        },
-        'Normal_Mouth': {
-            'name': '✅ Healthy Mouth',
-            'description': 'Your oral health appears normal! Continue maintaining good oral hygiene practices.',
-            'symptoms': [
-                'Pink, firm gums',
-                'No bleeding when brushing',
-                'Fresh breath',
-                'Clean teeth',
-                'No pain or sensitivity'
-            ],
-            'causes': [],
-            'treatment': ['Continue brushing twice daily', 'Floss daily', 'Regular dental checkups', 'Balanced diet', 'Limit sugary foods'],
-            'urgency': 'Routine checkup every 6 months'
-        }
+DISEASE_DATABASE = {
+    'Oral_Cancer': {
+        'name': 'Oral Cancer',
+        'name_hi': 'मुंह का कैंसर',
+        'emoji': '🚨',
+        'risk_level': 'high',
+        'description': 'Oral cancer is a serious condition where malignant cells form in the tissues of the mouth or throat. Early detection significantly improves survival rates.',
+        'description_hi': 'मुंह का कैंसर एक गंभीर स्थिति है जहां मुंह या गले के ऊतकों में घातक कोशिकाएं बनती हैं।',
+        'symptoms': [
+            'Persistent mouth sores that don\'t heal',
+            'White or red patches in mouth',
+            'Lump or thickening in cheek',
+            'Difficulty swallowing or chewing',
+            'Numbness in tongue or mouth',
+            'Unexplained bleeding',
+            'Chronic sore throat',
+            'Jaw pain or stiffness'
+        ],
+        'causes': [
+            'Tobacco use (smoking, chewing)',
+            'Heavy alcohol consumption',
+            'HPV infection',
+            'Excessive sun exposure (lip cancer)',
+            'Poor nutrition',
+            'Weakened immune system',
+            'Family history of cancer'
+        ],
+        'treatments': [
+            'Surgical removal of tumor',
+            'Radiation therapy',
+            'Chemotherapy',
+            'Targeted drug therapy',
+            'Immunotherapy',
+            'Reconstructive surgery'
+        ],
+        'urgency': 'CRITICAL - Seek immediate medical attention within 24-48 hours',
+        'urgency_hi': 'गंभीर - 24-48 घंटों के भीतर तुरंत चिकित्सा सहायता लें'
     },
-    'hi': {
-        'Oral_Cancer': {
-            'name': '⚠️ मुंह के कैंसर के संकेत',
-            'description': 'मुंह का कैंसर एक गंभीर स्थिति है। जल्दी पता लगाना जीवन बचा सकता है।',
-            'symptoms': ['मुंह में सफेद या लाल धब्बे', 'न भरने वाले घाव', 'गाल में गांठ', 'निगलने में कठिनाई'],
-            'causes': ['तंबाकू का उपयोग', 'शराब', 'HPV संक्रमण'],
-            'treatment': ['सर्जरी', 'रेडिएशन थेरेपी', 'कीमोथेरेपी'],
-            'urgency': 'तत्काल - 24-48 घंटों के भीतर ऑन्कोलॉजिस्ट से मिलें'
-        },
-        'Ulcers': {
-            'name': 'मुंह के छाले',
-            'description': 'मुंह के छाले दर्दनाक घाव हैं जो आमतौर पर 1-2 सप्ताह में ठीक हो जाते हैं।',
-            'symptoms': ['दर्दनाक गोल घाव', 'जलन', 'खाने में कठिनाई'],
-            'causes': ['तनाव', 'विटामिन की कमी', 'मसालेदार भोजन'],
-            'treatment': ['एंटीसेप्टिक माउथवॉश', 'दर्द निवारक जेल', 'नमक के पानी से गरारे'],
-            'urgency': 'निगरानी करें - 2 सप्ताह से अधिक रहे तो डॉक्टर से मिलें'
-        },
-        'Normal_Mouth': {
-            'name': '✅ स्वस्थ मुंह',
-            'description': 'आपका मौखिक स्वास्थ्य सामान्य दिखता है!',
-            'symptoms': ['गुलाबी मसूड़े', 'कोई रक्तस्राव नहीं', 'ताजी सांस'],
-            'causes': [],
-            'treatment': ['दिन में दो बार ब्रश करें', 'नियमित जांच करवाएं'],
-            'urgency': 'हर 6 महीने में नियमित जांच'
-        }
+    'Ulcers': {
+        'name': 'Mouth Ulcers',
+        'name_hi': 'मुंह के छाले',
+        'emoji': '⚠️',
+        'risk_level': 'medium',
+        'description': 'Mouth ulcers (canker sores) are painful sores that appear inside the mouth. Most heal within 1-2 weeks without treatment.',
+        'description_hi': 'मुंह के छाले दर्दनाक घाव हैं जो मुंह के अंदर दिखाई देते हैं।',
+        'symptoms': [
+            'Painful round or oval sores',
+            'White or yellow center with red border',
+            'Burning sensation before appearing',
+            'Difficulty eating spicy/acidic foods',
+            'Swelling around the sore',
+            'Tingling sensation'
+        ],
+        'causes': [
+            'Stress and anxiety',
+            'Minor mouth injuries',
+            'Acidic or spicy foods',
+            'Vitamin deficiencies (B12, iron, folate)',
+            'Hormonal changes',
+            'Food allergies',
+            'Certain medications'
+        ],
+        'treatments': [
+            'Antiseptic mouthwash',
+            'Pain-relieving gels (Benzocaine)',
+            'Saltwater rinse',
+            'Avoid spicy/acidic foods',
+            'Vitamin B12 supplements',
+            'Corticosteroid ointments'
+        ],
+        'urgency': 'Monitor - See dentist if ulcer persists beyond 2 weeks',
+        'urgency_hi': 'निगरानी करें - यदि 2 सप्ताह से अधिक रहे तो दंत चिकित्सक से मिलें'
+    },
+    'Gingivitis': {
+        'name': 'Gingivitis',
+        'name_hi': 'मसूड़ों की सूजन',
+        'emoji': '⚠️',
+        'risk_level': 'medium',
+        'description': 'Gingivitis is inflammation of the gums caused by bacterial infection. If left untreated, it can progress to periodontitis and tooth loss.',
+        'description_hi': 'मसूड़े की सूजन बैक्टीरिया के संक्रमण के कारण होने वाली मसूड़ों की सूजन है।',
+        'symptoms': [
+            'Red, swollen gums',
+            'Bleeding while brushing or flossing',
+            'Bad breath (halitosis)',
+            'Receding gums',
+            'Tender or painful gums',
+            'Soft, puffy gums',
+            'Dark red gum color'
+        ],
+        'causes': [
+            'Poor oral hygiene',
+            'Plaque and tartar buildup',
+            'Smoking or tobacco use',
+            'Diabetes',
+            'Hormonal changes',
+            'Certain medications',
+            'Dry mouth'
+        ],
+        'treatments': [
+            'Professional dental cleaning',
+            'Improved brushing technique',
+            'Daily flossing',
+            'Antibacterial mouthwash',
+            'Regular dental checkups',
+            'Quit smoking'
+        ],
+        'urgency': 'Schedule dental visit within 1-2 weeks',
+        'urgency_hi': '1-2 सप्ताह के भीतर दंत चिकित्सक से मिलें'
+    },
+    'Caries': {
+        'name': 'Dental Caries (Cavities)',
+        'name_hi': 'दांतों की सड़न',
+        'emoji': '⚠️',
+        'risk_level': 'medium',
+        'description': 'Dental caries (cavities) are permanently damaged areas in teeth that develop into tiny holes. They are one of the most common health problems worldwide.',
+        'description_hi': 'दंत क्षय (कैविटी) दांतों में स्थायी रूप से क्षतिग्रस्त क्षेत्र हैं।',
+        'symptoms': [
+            'Toothache or sensitivity',
+            'Pain when eating sweet, hot, or cold foods',
+            'Visible holes or pits in teeth',
+            'Brown, black, or white staining',
+            'Bad breath',
+            'Pain when biting down'
+        ],
+        'causes': [
+            'Frequent snacking on sugary foods',
+            'Sugary drinks consumption',
+            'Poor brushing habits',
+            'Bacteria in mouth',
+            'Dry mouth',
+            'Lack of fluoride',
+            'Eating disorders'
+        ],
+        'treatments': [
+            'Dental fillings',
+            'Dental crowns (for severe decay)',
+            'Root canal treatment',
+            'Fluoride treatments',
+            'Tooth extraction (if necessary)',
+            'Dental sealants'
+        ],
+        'urgency': 'Schedule dental appointment within 1-2 weeks',
+        'urgency_hi': '1-2 सप्ताह के भीतर दंत चिकित्सक से मिलें'
+    },
+    'Calculus': {
+        'name': 'Calculus (Tartar)',
+        'name_hi': 'टार्टर',
+        'emoji': '📋',
+        'risk_level': 'low',
+        'description': 'Calculus (tartar) is hardite plaque that has mineralized on teeth. It cannot be removed by regular brushing and requires professional cleaning.',
+        'description_hi': 'कैलकुलस (टार्टर) कठोर पट्टिका है जो दांतों पर खनिज हो गई है।',
+        'symptoms': [
+            'Yellow or brown deposits on teeth',
+            'Rough feeling on tooth surface',
+            'Bad breath',
+            'Gum irritation and inflammation',
+            'Bleeding gums',
+            'Teeth appear darker'
+        ],
+        'causes': [
+            'Poor oral hygiene',
+            'Not flossing regularly',
+            'Smoking or tobacco use',
+            'Dry mouth conditions',
+            'Diet high in sugar and starch',
+            'Irregular dental visits'
+        ],
+        'treatments': [
+            'Professional scaling and cleaning',
+            'Root planing',
+            'Improved daily oral hygiene',
+            'Electric toothbrush',
+            'Regular dental cleanings',
+            'Tartar-control toothpaste'
+        ],
+        'urgency': 'Schedule professional cleaning within 1 month',
+        'urgency_hi': '1 महीने के भीतर पेशेवर सफाई करवाएं'
+    },
+    'Tooth Discoloration': {
+        'name': 'Tooth Discoloration',
+        'name_hi': 'दांतों का मलिनकिरण',
+        'emoji': '📋',
+        'risk_level': 'low',
+        'description': 'Tooth discoloration refers to staining or color changes in teeth. It can be extrinsic (surface stains) or intrinsic (internal discoloration).',
+        'description_hi': 'दांतों का मलिनकिरण दांतों में दाग या रंग परिवर्तन को संदर्भित करता है।',
+        'symptoms': [
+            'Yellow or brown teeth',
+            'White spots on teeth',
+            'Gray or dark colored teeth',
+            'Uneven tooth coloring',
+            'Stains between teeth'
+        ],
+        'causes': [
+            'Coffee, tea, or red wine',
+            'Tobacco use',
+            'Poor dental hygiene',
+            'Certain medications',
+            'Aging',
+            'Excessive fluoride (fluorosis)',
+            'Dental trauma'
+        ],
+        'treatments': [
+            'Professional teeth whitening',
+            'Whitening toothpaste',
+            'Dental veneers',
+            'Dental bonding',
+            'Better oral hygiene',
+            'Avoiding staining foods/drinks'
+        ],
+        'urgency': 'Non-urgent - Cosmetic concern, consult dentist at convenience',
+        'urgency_hi': 'गैर-जरूरी - सौंदर्य संबंधी चिंता'
+    },
+    'Hypodontia': {
+        'name': 'Hypodontia',
+        'name_hi': 'दांतों की कमी',
+        'emoji': '📋',
+        'risk_level': 'low',
+        'description': 'Hypodontia is a condition where one or more teeth fail to develop. It can affect dental function and facial appearance.',
+        'description_hi': 'हाइपोडोंटिया एक ऐसी स्थिति है जहां एक या अधिक दांत विकसित नहीं होते।',
+        'symptoms': [
+            'Visible gaps in teeth',
+            'Difficulty chewing properly',
+            'Speech difficulties',
+            'Jawbone issues',
+            'Misalignment of existing teeth',
+            'Self-esteem concerns'
+        ],
+        'causes': [
+            'Genetic factors',
+            'Developmental abnormalities',
+            'Trauma during development',
+            'Radiation therapy',
+            'Certain syndromes',
+            'Environmental factors'
+        ],
+        'treatments': [
+            'Dental implants',
+            'Fixed bridges',
+            'Removable partial dentures',
+            'Orthodontic treatment',
+            'Space maintainers',
+            'Dental bonding'
+        ],
+        'urgency': 'Non-urgent - Consult dentist for treatment options',
+        'urgency_hi': 'गैर-जरूरी - उपचार विकल्पों के लिए दंत चिकित्सक से परामर्श करें'
+    },
+    'Normal_Mouth': {
+        'name': 'Healthy Mouth',
+        'name_hi': 'स्वस्थ मुंह',
+        'emoji': '✅',
+        'risk_level': 'low',
+        'description': 'Your oral health appears to be in good condition! Continue maintaining your current oral hygiene practices.',
+        'description_hi': 'आपका मौखिक स्वास्थ्य अच्छी स्थिति में दिखाई देता है!',
+        'symptoms': [
+            'Pink and firm gums',
+            'No bleeding when brushing',
+            'Fresh breath',
+            'Clean teeth without visible plaque',
+            'No pain or sensitivity',
+            'Properly aligned teeth'
+        ],
+        'causes': [],
+        'treatments': [
+            'Continue brushing twice daily',
+            'Floss once daily',
+            'Use fluoride toothpaste',
+            'Regular dental checkups (every 6 months)',
+            'Maintain balanced diet',
+            'Limit sugary foods and drinks',
+            'Stay hydrated'
+        ],
+        'urgency': 'Routine dental checkup every 6 months',
+        'urgency_hi': 'हर 6 महीने में नियमित दंत जांच'
     }
 }
 
-# Risk levels
-RISK_LEVELS = {
-    'Oral_Cancer': 'high',
-    'Ulcers': 'medium',
-    'Gingivitis': 'medium',
-    'Caries': 'medium',
-    'Calculus': 'low',
-    'Tooth Discoloration': 'low',
-    'Hypodontia': 'low',
-    'Normal_Mouth': 'low'
-}
-
 # ============================================
-# MODEL LOADING
+# MODEL LOADING FUNCTIONS
 # ============================================
 @st.cache_resource
 def load_model():
-    """Load the trained model"""
+    """Load the trained TensorFlow model"""
+    if not TF_AVAILABLE:
+        return None
+    
     model_path = 'model/oral_disease_model.h5'
-    if os.path.exists(model_path):
+    
+    if not os.path.exists(model_path):
+        return None
+    
+    try:
+        # Try loading with compile=False first
+        model = tf.keras.models.load_model(model_path, compile=False)
+        model.compile(
+            optimizer='adam',
+            loss='categorical_crossentropy',
+            metrics=['accuracy']
+        )
+        return model
+    except Exception as e:
+        # Fallback: recreate architecture and load weights
         try:
-            model = tf.keras.models.load_model(model_path, compile=False)
-            model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+            from tensorflow.keras.applications import EfficientNetB0
+            from tensorflow.keras import layers, Model
+            
+            base_model = EfficientNetB0(
+                weights=None,
+                include_top=False,
+                input_shape=(224, 224, 3)
+            )
+            
+            x = layers.GlobalAveragePooling2D()(base_model.output)
+            x = layers.BatchNormalization()(x)
+            x = layers.Dropout(0.3)(x)
+            x = layers.Dense(256, activation='relu')(x)
+            x = layers.BatchNormalization()(x)
+            x = layers.Dropout(0.5)(x)
+            outputs = layers.Dense(8, activation='softmax')(x)
+            
+            model = Model(inputs=base_model.input, outputs=outputs)
+            model.load_weights(model_path)
+            
             return model
-        except Exception as e:
-            try:
-                from tensorflow.keras.applications import EfficientNetB0
-                from tensorflow.keras import layers, Model
-                
-                base_model = EfficientNetB0(weights=None, include_top=False, input_shape=(224, 224, 3))
-                x = layers.GlobalAveragePooling2D()(base_model.output)
-                x = layers.BatchNormalization()(x)
-                x = layers.Dropout(0.3)(x)
-                x = layers.Dense(256, activation='relu')(x)
-                x = layers.BatchNormalization()(x)
-                x = layers.Dropout(0.5)(x)
-                outputs = layers.Dense(8, activation='softmax')(x)
-                model = Model(inputs=base_model.input, outputs=outputs)
-                model.load_weights(model_path)
-                return model
-            except Exception as e2:
-                st.error(f"Error loading model: {e2}")
-                return None
-    return None
+        except Exception as e2:
+            return None
 
 @st.cache_data
 def load_class_names():
-    """Load class names"""
+    """Load class names from JSON file"""
     json_path = 'model/class_names.json'
+    
+    default_classes = [
+        'Calculus', 'Caries', 'Gingivitis', 'Hypodontia',
+        'Normal_Mouth', 'Oral_Cancer', 'Tooth Discoloration', 'Ulcers'
+    ]
+    
     if os.path.exists(json_path):
-        with open(json_path, 'r') as f:
-            return json.load(f)['class_names']
-    return ['Calculus', 'Caries', 'Gingivitis', 'Hypodontia', 'Normal_Mouth', 'Oral_Cancer', 'Tooth Discoloration', 'Ulcers']
+        try:
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+            return data.get('class_names', default_classes)
+        except:
+            return default_classes
+    
+    return default_classes
 
 # ============================================
-# IMAGE PROCESSING
+# IMAGE PROCESSING FUNCTIONS
 # ============================================
 def preprocess_image(image, target_size=(224, 224)):
-    """Preprocess image for prediction"""
+    """Preprocess image for model prediction"""
     if image.mode != 'RGB':
         image = image.convert('RGB')
-    image = image.resize(target_size)
-    img_array = np.array(image) / 255.0
-    return np.expand_dims(img_array, axis=0)
+    
+    image = image.resize(target_size, Image.Resampling.LANCZOS)
+    img_array = np.array(image, dtype=np.float32)
+    img_array = img_array / 255.0
+    img_array = np.expand_dims(img_array, axis=0)
+    
+    return img_array
 
-def make_gradcam_heatmap(img_array, model, pred_index=None):
-    """Generate GradCAM heatmap"""
+def create_gradcam_heatmap(img_array, model, pred_index):
+    """Generate GradCAM heatmap for visualization"""
+    if not TF_AVAILABLE or model is None:
+        return None
+    
     try:
+        # Find the last convolutional layer
         last_conv_layer = None
         for layer in reversed(model.layers):
-            if 'conv' in layer.name.lower():
-                last_conv_layer = layer.name
+            if 'conv' in layer.name.lower() and hasattr(layer, 'output'):
+                last_conv_layer = layer
                 break
-        if not last_conv_layer:
-            return None
-            
-        grad_model = tf.keras.models.Model([model.inputs], [model.get_layer(last_conv_layer).output, model.output])
         
+        if last_conv_layer is None:
+            return None
+        
+        # Create gradient model
+        grad_model = tf.keras.models.Model(
+            inputs=model.inputs,
+            outputs=[last_conv_layer.output, model.output]
+        )
+        
+        # Compute gradients
         with tf.GradientTape() as tape:
-            conv_output, preds = grad_model(img_array)
-            if pred_index is None:
-                pred_index = tf.argmax(preds[0])
-            class_channel = preds[:, pred_index]
+            conv_output, predictions = grad_model(img_array)
+            class_channel = predictions[:, pred_index]
         
         grads = tape.gradient(class_channel, conv_output)
+        
+        if grads is None:
+            return None
+        
         pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
         
-        heatmap = conv_output[0] @ pooled_grads[..., tf.newaxis]
+        conv_output = conv_output[0]
+        heatmap = conv_output @ pooled_grads[..., tf.newaxis]
         heatmap = tf.squeeze(heatmap)
-        heatmap = tf.maximum(heatmap, 0) / tf.math.reduce_max(heatmap)
+        
+        # Normalize
+        heatmap = tf.maximum(heatmap, 0)
+        max_val = tf.math.reduce_max(heatmap)
+        if max_val > 0:
+            heatmap = heatmap / max_val
+        
         return heatmap.numpy()
-    except:
+    
+    except Exception as e:
         return None
 
-def overlay_gradcam(img, heatmap, alpha=0.4):
-    """Overlay heatmap on image"""
-    if heatmap is None:
-        return img
-    heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
-    heatmap = np.uint8(255 * heatmap)
-    heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
-    heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
-    return np.uint8(heatmap * alpha + img * (1 - alpha))
+def apply_heatmap_overlay(original_image, heatmap, alpha=0.4):
+    """Apply heatmap overlay on original image"""
+    if heatmap is None or not CV2_AVAILABLE:
+        return None
+    
+    try:
+        # Resize original image
+        img = np.array(original_image.resize((224, 224)))
+        
+        # Resize heatmap to match image
+        heatmap_resized = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
+        
+        # Convert to uint8
+        heatmap_uint8 = np.uint8(255 * heatmap_resized)
+        
+        # Apply colormap
+        heatmap_colored = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
+        heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
+        
+        # Blend images
+        overlay = np.uint8(heatmap_colored * alpha + img * (1 - alpha))
+        
+        return overlay
+    
+    except Exception as e:
+        return None
 
 # ============================================
-# MAIN APPLICATION
+# ANALYSIS FUNCTIONS
 # ============================================
-def main():
-    # Session state
-    if 'camera_on' not in st.session_state:
-        st.session_state.camera_on = False
+def analyze_image(image, model, class_names):
+    """Analyze image and return predictions"""
+    if model is None:
+        return None, None
     
-    # Sidebar
+    processed = preprocess_image(image)
+    predictions = model.predict(processed, verbose=0)
+    
+    pred_idx = int(np.argmax(predictions[0]))
+    pred_class = class_names[pred_idx]
+    confidence = float(predictions[0][pred_idx]) * 100
+    
+    return {
+        'class': pred_class,
+        'index': pred_idx,
+        'confidence': confidence,
+        'all_scores': {
+            class_names[i]: float(predictions[0][i]) * 100 
+            for i in range(len(class_names))
+        }
+    }, processed
+
+def calculate_risk_score(risk_factors):
+    """Calculate overall risk score from questionnaire"""
+    score = sum([
+        risk_factors.get('tobacco', False),
+        risk_factors.get('paan', False),
+        risk_factors.get('smoke', False),
+        risk_factors.get('alcohol', False)
+    ])
+    return score
+
+# ============================================
+# UI COMPONENTS
+# ============================================
+def render_sidebar():
+    """Render sidebar with info and settings"""
     with st.sidebar:
+        # Language selector
         st.markdown("### 🌐 Language / भाषा")
-        lang = st.selectbox("Select Language", ["English", "हिंदी"], label_visibility="collapsed")
-        lang_code = 'en' if lang == "English" else 'hi'
+        lang = st.selectbox(
+            "Select Language",
+            ["English", "हिंदी"],
+            key="language_selector",
+            label_visibility="collapsed"
+        )
+        st.session_state.language = 'en' if lang == "English" else 'hi'
         
         st.markdown("---")
+        
+        # Model metrics
         st.markdown("### 📊 Model Performance")
         
         st.markdown("""
@@ -565,7 +1025,7 @@ def main():
         st.markdown("""
         <div class="sidebar-metric">
             <div class="sidebar-metric-value">91%</div>
-            <div class="sidebar-metric-label">Cancer Detection Precision</div>
+            <div class="sidebar-metric-label">Cancer Detection</div>
         </div>
         """, unsafe_allow_html=True)
         
@@ -577,200 +1037,346 @@ def main():
         """, unsafe_allow_html=True)
         
         st.markdown("---")
+        
+        # Detectable conditions
         st.markdown("### 🎯 Detectable Conditions")
+        
         conditions = [
-            ("🔴", "Oral Cancer"),
-            ("🟠", "Mouth Ulcers"),
-            ("🟠", "Gingivitis"),
-            ("🟠", "Dental Caries"),
-            ("🟢", "Calculus"),
-            ("🟢", "Tooth Discoloration"),
-            ("🟢", "Hypodontia"),
-            ("🟢", "Normal/Healthy")
+            ("dot-red", "Oral Cancer"),
+            ("dot-orange", "Mouth Ulcers"),
+            ("dot-orange", "Gingivitis"),
+            ("dot-orange", "Dental Caries"),
+            ("dot-green", "Calculus"),
+            ("dot-green", "Tooth Discoloration"),
+            ("dot-green", "Hypodontia"),
+            ("dot-green", "Normal/Healthy")
         ]
-        for icon, name in conditions:
-            st.markdown(f"{icon} {name}")
-    
-    # Main content
-    st.markdown('<h1 class="main-header">🦷 Oral Health AI</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">AI-Powered Oral Disease Screening • Early Detection Saves Lives</p>', unsafe_allow_html=True)
-    
-    # Load model
-    model = load_model()
-    class_names = load_class_names()
-    
-    if model is None:
-        st.error("⚠️ Model not loaded. Please check model files.")
-        return
-    
-    # ===== STEP 1: RISK ASSESSMENT =====
-    st.markdown('<p class="section-header"><span class="step-badge">Step 1</span> Risk Assessment</p>', unsafe_allow_html=True)
-    
-    risk_col1, risk_col2 = st.columns(2)
-    with risk_col1:
-        tobacco = st.checkbox("🚬 Do you use tobacco/gutkha?")
-        paan = st.checkbox("🌿 Do you consume paan/betel?")
-    with risk_col2:
-        smoke = st.checkbox("🔥 Do you smoke?")
-        alcohol = st.checkbox("🍺 Do you consume alcohol regularly?")
-    
-    risk_factors = sum([tobacco, paan, smoke, alcohol])
-    
-    if risk_factors >= 3:
-        st.markdown('<span class="risk-badge risk-high">🚨 HIGH RISK - {} of 4 risk factors</span>'.format(risk_factors), unsafe_allow_html=True)
-        st.error("You have multiple risk factors for oral cancer. Regular screening is STRONGLY recommended!")
-    elif risk_factors >= 1:
-        st.markdown('<span class="risk-badge risk-medium">⚠️ MODERATE RISK - {} of 4 risk factors</span>'.format(risk_factors), unsafe_allow_html=True)
-        st.warning("You have some risk factors. Consider regular dental checkups.")
-    else:
-        st.markdown('<span class="risk-badge risk-low">✅ LOW RISK - No major risk factors</span>', unsafe_allow_html=True)
-        st.success("Great! No major risk factors identified. Maintain good oral hygiene!")
-    
-    st.markdown("---")
-    
-    # ===== STEP 2: IMAGE INPUT =====
-    st.markdown('<p class="section-header"><span class="step-badge">Step 2</span> Upload or Capture Image</p>', unsafe_allow_html=True)
-    
-    input_tab1, input_tab2 = st.tabs(["📁 Upload Image", "📷 Use Camera"])
-    
-    image_source = None
-    
-    with input_tab1:
-        uploaded_file = st.file_uploader("Upload a clear image of your mouth/teeth", type=['jpg', 'jpeg', 'png'])
-        if uploaded_file:
-            image_source = uploaded_file
-    
-    with input_tab2:
-        st.info("📸 Position your camera to capture a clear image of the affected area")
-        camera_input = st.camera_input("Take a photo")
-        if camera_input:
-            image_source = camera_input
-    
-    # ===== ANALYSIS =====
-    if image_source:
-        image = Image.open(image_source)
+        
+        for dot_class, name in conditions:
+            st.markdown(f"""
+            <div class="condition-item">
+                <div class="condition-dot {dot_class}"></div>
+                <span>{name}</span>
+            </div>
+            """, unsafe_allow_html=True)
         
         st.markdown("---")
-        st.markdown('<p class="section-header"><span class="step-badge">Step 3</span> Analysis Results</p>', unsafe_allow_html=True)
         
-        col1, col2 = st.columns([1, 1])
-        
-        with col1:
-            st.markdown("#### 📷 Uploaded Image")
-            st.markdown('<div class="image-container">', unsafe_allow_html=True)
-            st.image(image, use_column_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        with col2:
-            with st.spinner("🔍 Analyzing image with AI..."):
-                processed_img = preprocess_image(image)
-                predictions = model.predict(processed_img, verbose=0)
-                
-                pred_idx = np.argmax(predictions[0])
-                pred_class = class_names[pred_idx]
-                confidence = predictions[0][pred_idx] * 100
-                
-                risk_level = RISK_LEVELS.get(pred_class, 'low')
-                if risk_factors >= 2 and risk_level == 'medium':
-                    risk_level = 'high'
-                
-                # Get disease info
-                disease_data = DISEASE_INFO.get(lang_code, DISEASE_INFO['en']).get(pred_class, DISEASE_INFO['en'].get(pred_class, {}))
-                
-                # Result card
-                if risk_level == 'high':
-                    card_class = 'result-danger'
-                elif risk_level == 'medium':
-                    card_class = 'result-warning'
-                else:
-                    card_class = 'result-success'
-                
-                st.markdown(f"""
-                <div class="result-card {card_class}">
-                    <div class="result-title">{disease_data.get('name', pred_class)}</div>
-                    <div class="confidence-container">
-                        <div class="confidence-label">AI Confidence Score</div>
-                        <div class="confidence-value {'conf-high' if confidence > 80 else 'conf-medium' if confidence > 50 else 'conf-low'}">{confidence:.1f}%</div>
-                    </div>
-                    <p>{disease_data.get('description', '')}</p>
-                    <p><strong>⏰ Urgency:</strong> {disease_data.get('urgency', 'Consult a dentist')}</p>
-                </div>
-                """, unsafe_allow_html=True)
-        
-        # Disease Information
-        st.markdown("#### 📋 Detailed Information")
-        
-        info_col1, info_col2, info_col3 = st.columns(3)
-        
-        with info_col1:
-            st.markdown('<div class="disease-info">', unsafe_allow_html=True)
-            st.markdown("##### 🔍 Symptoms")
-            symptoms = disease_data.get('symptoms', [])
-            for s in symptoms[:5]:
-                st.markdown(f"• {s}")
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        with info_col2:
-            st.markdown('<div class="disease-info">', unsafe_allow_html=True)
-            st.markdown("##### ⚡ Common Causes")
-            causes = disease_data.get('causes', [])
-            for c in causes[:5]:
-                st.markdown(f"• {c}")
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        with info_col3:
-            st.markdown('<div class="disease-info">', unsafe_allow_html=True)
-            st.markdown("##### 💊 Treatment Options")
-            treatments = disease_data.get('treatment', [])
-            for t in treatments[:5]:
-                st.markdown(f"• {t}")
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        # All predictions
-        with st.expander("📊 View All Prediction Scores"):
-            for cls, prob in sorted(zip(class_names, predictions[0]), key=lambda x: x[1], reverse=True):
-                st.progress(float(prob), text=f"{cls}: {prob*100:.1f}%")
-        
-        # GradCAM Heatmap
-        st.markdown("#### 🔥 AI Attention Heatmap")
-        st.caption("This shows where the AI focused to make its prediction (red = high attention)")
-        
-        try:
-            heatmap = make_gradcam_heatmap(processed_img, model, pred_idx)
-            if heatmap is not None:
-                img_array = np.array(image.resize((224, 224)))
-                gradcam_img = overlay_gradcam(img_array, heatmap)
-                
-                hm_col1, hm_col2 = st.columns(2)
-                with hm_col1:
-                    st.image(image.resize((224, 224)), caption="Original", use_column_width=True)
-                with hm_col2:
-                    st.image(gradcam_img, caption="AI Focus Areas", use_column_width=True)
-        except Exception as e:
-            st.info("Heatmap visualization not available for this image.")
+        # Links
+        st.markdown("### 🔗 Links")
+        st.markdown("[📂 GitHub Repository](https://github.com/ArihantKhaitan/oral-health-ai)")
+        st.markdown("[🤗 Hugging Face Space](https://huggingface.co/spaces/Arihant2409/oral-health-ai)")
+
+def render_header():
+    """Render main header"""
+    st.markdown('<h1 class="main-title">🦷 Oral Health AI</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="main-subtitle">AI-Powered Oral Disease Screening • Early Detection Saves Lives</p>', unsafe_allow_html=True)
+
+def render_risk_assessment():
+    """Render risk assessment section"""
+    st.markdown("""
+    <div class="step-container">
+        <div class="step-number">1</div>
+        <h2 class="step-title">Risk Assessment</h2>
+    </div>
+    """, unsafe_allow_html=True)
     
+    st.markdown("Answer these questions to assess your oral health risk factors:")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        tobacco = st.checkbox("🚬 Do you use tobacco or gutkha?", key="tobacco_check")
+        paan = st.checkbox("🌿 Do you consume paan or betel?", key="paan_check")
+    
+    with col2:
+        smoke = st.checkbox("🔥 Do you smoke?", key="smoke_check")
+        alcohol = st.checkbox("🍺 Do you consume alcohol regularly?", key="alcohol_check")
+    
+    # Update session state
+    st.session_state.risk_factors = {
+        'tobacco': tobacco,
+        'paan': paan,
+        'smoke': smoke,
+        'alcohol': alcohol
+    }
+    
+    risk_score = calculate_risk_score(st.session_state.risk_factors)
+    
+    # Display risk level
+    if risk_score >= 3:
+        st.markdown("""
+        <div class="risk-badge risk-high">
+            🚨 HIGH RISK - {} of 4 risk factors identified
+        </div>
+        """.format(risk_score), unsafe_allow_html=True)
+        st.error("⚠️ You have multiple risk factors for oral cancer. Regular screening is strongly recommended!")
+    elif risk_score >= 1:
+        st.markdown("""
+        <div class="risk-badge risk-medium">
+            ⚠️ MODERATE RISK - {} of 4 risk factors identified
+        </div>
+        """.format(risk_score), unsafe_allow_html=True)
+        st.warning("You have some risk factors. Consider regular dental checkups.")
+    else:
+        st.markdown("""
+        <div class="risk-badge risk-low">
+            ✅ LOW RISK - No major risk factors identified
+        </div>
+        """, unsafe_allow_html=True)
+        st.success("Great! No major risk factors. Maintain good oral hygiene!")
+    
+    return risk_score
+
+def render_image_input():
+    """Render image input section"""
+    st.markdown("---")
+    st.markdown("""
+    <div class="step-container">
+        <div class="step-number">2</div>
+        <h2 class="step-title">Upload or Capture Image</h2>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    tab1, tab2 = st.tabs(["📁 Upload Image", "📷 Camera"])
+    
+    image = None
+    
+    with tab1:
+        uploaded_file = st.file_uploader(
+            "Upload a clear image of your mouth or teeth",
+            type=['jpg', 'jpeg', 'png'],
+            key="file_uploader",
+            help="Supported formats: JPG, JPEG, PNG. Max size: 200MB"
+        )
+        if uploaded_file is not None:
+            image = Image.open(uploaded_file)
+    
+    with tab2:
+        st.info("📸 Position your camera to capture a clear image of the affected area in your mouth.")
+        camera_image = st.camera_input("Take a photo", key="camera_input")
+        if camera_image is not None:
+            image = Image.open(camera_image)
+    
+    return image
+
+def render_results(prediction, original_image, processed_image, model, risk_score):
+    """Render analysis results"""
+    st.markdown("---")
+    st.markdown("""
+    <div class="step-container">
+        <div class="step-number">3</div>
+        <h2 class="step-title">Analysis Results</h2>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    pred_class = prediction['class']
+    confidence = prediction['confidence']
+    disease_info = DISEASE_DATABASE.get(pred_class, DISEASE_DATABASE['Normal_Mouth'])
+    
+    # Determine risk level
+    risk_level = disease_info['risk_level']
+    if risk_score >= 2 and risk_level == 'medium':
+        risk_level = 'high'
+    
+    # Layout: Image and Result Card
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown("#### 📷 Your Image")
+        st.image(original_image, use_column_width=True)
+    
+    with col2:
+        # Result card
+        if risk_level == 'high':
+            card_class = 'result-card-danger'
+            title_class = 'result-title-danger'
+        elif risk_level == 'medium':
+            card_class = 'result-card-warning'
+            title_class = 'result-title-warning'
+        else:
+            card_class = 'result-card-success'
+            title_class = 'result-title-success'
+        
+        st.markdown(f"""
+        <div class="{card_class}">
+            <div class="result-title {title_class}">
+                {disease_info['emoji']} {disease_info['name']}
+            </div>
+            <div class="confidence-box">
+                <div class="confidence-label">AI Confidence Score</div>
+                <div class="confidence-value {'conf-high' if confidence > 85 else 'conf-medium' if confidence > 60 else 'conf-low'}">
+                    {confidence:.1f}%
+                </div>
+            </div>
+            <p style="color: #e2e8f0; margin-top: 15px;">
+                {disease_info['description']}
+            </p>
+            <div class="urgency-badge">
+                ⏰ {disease_info['urgency']}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Detailed Information
+    st.markdown("#### 📋 Detailed Information")
+    
+    info_col1, info_col2, info_col3 = st.columns(3)
+    
+    with info_col1:
+        st.markdown("""
+        <div class="info-card">
+            <div class="info-card-title">🔍 Symptoms</div>
+            <ul class="info-card-list">
+        """, unsafe_allow_html=True)
+        for symptom in disease_info['symptoms'][:5]:
+            st.markdown(f"<li>{symptom}</li>", unsafe_allow_html=True)
+        st.markdown("</ul></div>", unsafe_allow_html=True)
+    
+    with info_col2:
+        st.markdown("""
+        <div class="info-card">
+            <div class="info-card-title">⚡ Common Causes</div>
+            <ul class="info-card-list">
+        """, unsafe_allow_html=True)
+        for cause in disease_info['causes'][:5]:
+            st.markdown(f"<li>{cause}</li>", unsafe_allow_html=True)
+        st.markdown("</ul></div>", unsafe_allow_html=True)
+    
+    with info_col3:
+        st.markdown("""
+        <div class="info-card">
+            <div class="info-card-title">💊 Treatment Options</div>
+            <ul class="info-card-list">
+        """, unsafe_allow_html=True)
+        for treatment in disease_info['treatments'][:5]:
+            st.markdown(f"<li>{treatment}</li>", unsafe_allow_html=True)
+        st.markdown("</ul></div>", unsafe_allow_html=True)
+    
+    # All predictions expander
+    with st.expander("📊 View All Prediction Scores"):
+        sorted_scores = sorted(
+            prediction['all_scores'].items(),
+            key=lambda x: x[1],
+            reverse=True
+        )
+        for class_name, score in sorted_scores:
+            st.progress(score / 100, text=f"{class_name}: {score:.1f}%")
+    
+    # GradCAM Heatmap
+    st.markdown("""
+    <div class="heatmap-container">
+        <div class="heatmap-title">🔥 AI Attention Heatmap</div>
+        <div class="heatmap-description">
+            This visualization shows where the AI focused when making its prediction. 
+            Red/yellow areas indicate high attention, blue areas indicate low attention.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    heatmap = create_gradcam_heatmap(processed_image, model, prediction['index'])
+    
+    if heatmap is not None:
+        overlay = apply_heatmap_overlay(original_image, heatmap)
+        
+        if overlay is not None:
+            hm_col1, hm_col2 = st.columns(2)
+            
+            with hm_col1:
+                st.image(
+                    original_image.resize((224, 224)),
+                    caption="Original Image",
+                    use_column_width=True
+                )
+            
+            with hm_col2:
+                st.image(
+                    overlay,
+                    caption="AI Focus Areas (Red = High Attention)",
+                    use_column_width=True
+                )
+        else:
+            st.info("Heatmap visualization could not be generated for this image.")
+    else:
+        st.info("Heatmap visualization is not available.")
+
+def render_footer():
+    """Render footer with dentist button and disclaimer"""
     st.markdown("---")
     
     # Find Dentist
     st.markdown("#### 🏥 Need Professional Help?")
-    st.markdown(
-        '<a href="https://www.google.com/maps/search/dentist+near+me" target="_blank" class="dentist-btn">📍 Find Dentists Near You</a>',
-        unsafe_allow_html=True
-    )
+    st.markdown("""
+    <a href="https://www.google.com/maps/search/dentist+near+me" target="_blank" class="dentist-button">
+        📍 Find Dentists Near You
+    </a>
+    """, unsafe_allow_html=True)
     
     # Disclaimer
     st.markdown("""
     <div class="disclaimer-box">
-        <h4>⚠️ IMPORTANT MEDICAL DISCLAIMER</h4>
-        <p>
-            This AI tool is for <strong>SCREENING PURPOSES ONLY</strong> and is NOT a substitute for professional medical diagnosis. 
-            The AI model may make errors and has an accuracy of approximately 87%. 
-            <strong>Always consult a qualified healthcare professional</strong> (dentist, oral surgeon, or doctor) for proper diagnosis and treatment.
-            Do not delay seeking medical attention based on results from this tool. If you notice any concerning symptoms, 
-            please visit a healthcare provider immediately.
-        </p>
+        <div class="disclaimer-title">
+            ⚠️ IMPORTANT MEDICAL DISCLAIMER
+        </div>
+        <div class="disclaimer-text">
+            This AI tool is intended for <strong>SCREENING PURPOSES ONLY</strong> and should not be used as a substitute 
+            for professional medical diagnosis, advice, or treatment. The AI model has an accuracy of approximately 87% 
+            and may produce incorrect results.
+            <br><br>
+            <strong>Always consult a qualified healthcare professional</strong> (dentist, oral surgeon, or doctor) 
+            for proper diagnosis and treatment of any oral health conditions. Do not delay seeking professional 
+            medical attention based on results from this tool.
+            <br><br>
+            If you experience severe pain, bleeding, difficulty swallowing, or notice any persistent changes 
+            in your mouth, <strong>seek immediate medical attention</strong>.
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
+# ============================================
+# MAIN APPLICATION
+# ============================================
+def main():
+    """Main application entry point"""
+    
+    # Render sidebar
+    render_sidebar()
+    
+    # Render header
+    render_header()
+    
+    # Load model and class names
+    model = load_model()
+    class_names = load_class_names()
+    
+    # Check if model loaded
+    if model is None:
+        st.error("⚠️ Model could not be loaded. Please ensure the model file exists at 'model/oral_disease_model.h5'")
+        st.info("Required files:\n- model/oral_disease_model.h5\n- model/class_names.json")
+        return
+    
+    # Step 1: Risk Assessment
+    risk_score = render_risk_assessment()
+    
+    # Step 2: Image Input
+    image = render_image_input()
+    
+    # Step 3: Analysis (if image provided)
+    if image is not None:
+        # Perform analysis
+        with st.spinner("🔍 Analyzing your image..."):
+            prediction, processed_image = analyze_image(image, model, class_names)
+        
+        if prediction is not None:
+            render_results(prediction, image, processed_image, model, risk_score)
+        else:
+            st.error("❌ Could not analyze the image. Please try again with a different image.")
+    
+    # Footer
+    render_footer()
+
+# ============================================
+# RUN APPLICATION
+# ============================================
 if __name__ == "__main__":
     main()
