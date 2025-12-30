@@ -22,7 +22,7 @@ license: mit
 
 **A comprehensive AI-powered oral disease screening tool designed for early detection of oral cancer and other dental conditions.**
 
-[Live Demo](https://huggingface.co/spaces/your-username/oral-health-ai) • [Report Bug](https://github.com/Arihant240/oral-health-ai/issues) • [Request Feature](https://github.com/Arihant240/oral-health-ai/issues)
+[Live Demo](https://huggingface.co/spaces/Arihant2409/oral-health-ai) • [Report Bug](https://github.com/Arihant240/oral-health-ai/issues) • [Request Feature](https://github.com/Arihant240/oral-health-ai/issues)
 
 </div>
 

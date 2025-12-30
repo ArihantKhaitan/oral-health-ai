@@ -11,8 +11,6 @@ Features:
 
 Author: Arihant
 """
-import os
-os.environ["TF_USE_LEGACY_KERAS"] = "1"
 
 import streamlit as st
 import tensorflow as tf
@@ -21,6 +19,7 @@ from PIL import Image
 import json
 import cv2
 import os
+os.environ["TF_USE_LEGACY_KERAS"] = "1"
 
 # ============================================
 # PAGE CONFIGURATION
@@ -210,8 +209,17 @@ def load_model():
     """Load the trained model"""
     model_path = 'model/oral_disease_model.h5'
     if os.path.exists(model_path):
-        model = tf.keras.models.load_model(model_path)
-        return model
+        try:
+            model = tf.keras.models.load_model(model_path, compile=False)
+            model.compile(
+                optimizer='adam',
+                loss='categorical_crossentropy',
+                metrics=['accuracy']
+            )
+            return model
+        except Exception as e:
+            st.error(f"Error loading model: {e}")
+            return None
     else:
         st.error(f"Model not found at {model_path}")
         return None
