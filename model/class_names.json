@@ -1,0 +1,14 @@
+{
+  "class_names": [
+    "Calculus",
+    "Caries",
+    "Gingivitis",
+    "Hypodontia",
+    "Normal_Mouth",
+    "Oral_Cancer",
+    "Tooth Discoloration",
+    "Ulcers"
+  ],
+  "num_classes": 8,
+  "img_size": 224
+}
