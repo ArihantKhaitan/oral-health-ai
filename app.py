@@ -94,7 +94,7 @@ st.set_page_config(
     page_title="Oral Health AI - मौखिक स्वास्थ्य AI",
     page_icon="🦷",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",  # Changed from "collapsed"
     menu_items={
         'Get Help': 'https://github.com/ArihantKhaitan/oral-health-ai',
         'Report a bug': 'https://github.com/ArihantKhaitan/oral-health-ai/issues',
@@ -1702,6 +1702,20 @@ CUSTOM_CSS = """
             font-size: 0.85rem;
         }
     }
+    /* Remove red indicator bar from tabs */
+    .stTabs [data-baseweb="tab-highlight"] {
+        display: none !important;
+    }
+    
+    .stTabs [data-baseweb="tab-border"] {
+        display: none !important;
+    }
+    
+    /* Better tab panel spacing */
+    .stTabs [data-baseweb="tab-panel"] {
+        padding-top: 15px;
+        border-top: none !important;
+    }
 </style>
 """
 
@@ -1827,100 +1841,178 @@ def predict_image(model, img_array, class_names):
     }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SECTION 8: PROPER GRADCAM HEATMAP IMPLEMENTATION (CONTINUED)
+# SECTION 8: ROBUST GRADCAM HEATMAP IMPLEMENTATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-def create_heatmap_overlay(original_image, heatmap, alpha=0.4, colormap='jet'):
+def find_target_layer(model):
+    """Find the last convolutional layer for GradCAM"""
+    for layer in reversed(model.layers):
+        if 'conv' in layer.name.lower():
+            return layer.name
+    # Fallback: find any layer with 4D output
+    for layer in reversed(model.layers):
+        try:
+            if len(layer.output.shape) == 4:
+                return layer.name
+        except:
+            continue
+    return None
+
+def compute_gradcam_heatmap(model, img_array, pred_index):
     """
-    Create a proper heatmap overlay on the original image.
+    Compute GradCAM heatmap using TensorFlow GradientTape.
+    Returns a normalized 2D heatmap array.
+    """
+    if not TF_AVAILABLE:
+        return None
+    
+    try:
+        # Find target layer
+        target_layer_name = find_target_layer(model)
+        if target_layer_name is None:
+            return None
+        
+        # Create gradient model
+        target_layer = model.get_layer(target_layer_name)
+        gradient_model = tf.keras.Model(
+            inputs=model.input,
+            outputs=[target_layer.output, model.output]
+        )
+        
+        # Compute gradients
+        with tf.GradientTape() as tape:
+            conv_output, predictions = gradient_model(img_array)
+            loss = predictions[:, pred_index]
+        
+        # Get gradients of the target class with respect to conv layer output
+        grads = tape.gradient(loss, conv_output)
+        
+        if grads is None:
+            return None
+        
+        # Global average pooling of gradients
+        pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+        
+        # Weight the conv output by importance
+        conv_output = conv_output[0]
+        heatmap = conv_output @ pooled_grads[..., tf.newaxis]
+        heatmap = tf.squeeze(heatmap)
+        
+        # ReLU and normalize
+        heatmap = tf.maximum(heatmap, 0)
+        max_val = tf.reduce_max(heatmap)
+        if max_val > 0:
+            heatmap = heatmap / max_val
+        
+        return heatmap.numpy()
+    
+    except Exception as e:
+        print(f"GradCAM error: {e}")
+        return None
+
+def create_heatmap_overlay(original_image, heatmap, intensity=0.6):
+    """
+    Create a colored heatmap overlay on the original image.
+    Uses jet colormap: Blue (low) -> Green -> Yellow -> Red (high)
     """
     if heatmap is None:
         return None
     
     try:
-        # Resize original image to standard size
+        # Resize image to standard size
         img_size = (224, 224)
-        img = original_image.resize(img_size, Image.Resampling.LANCZOS)
-        img_array = np.array(img)
+        img = original_image.copy()
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        img = img.resize(img_size, Image.Resampling.LANCZOS)
+        img_array = np.array(img, dtype=np.float32)
         
-        # Ensure image is RGB
-        if len(img_array.shape) == 2:
-            img_array = np.stack([img_array] * 3, axis=-1)
-        elif img_array.shape[-1] == 4:
-            img_array = img_array[:, :, :3]
+        # Resize heatmap to image size
+        heatmap_resized = cv2.resize(heatmap.astype(np.float32), img_size)
         
-        # Resize heatmap to match image size
-        if CV2_AVAILABLE:
-            heatmap_resized = cv2.resize(heatmap, img_size)
-        else:
-            # Manual resize using PIL
-            heatmap_pil = Image.fromarray((heatmap * 255).astype(np.uint8))
-            heatmap_pil = heatmap_pil.resize(img_size, Image.Resampling.BILINEAR)
-            heatmap_resized = np.array(heatmap_pil) / 255.0
+        # Apply Gaussian blur for smoother visualization
+        heatmap_resized = cv2.GaussianBlur(heatmap_resized, (15, 15), 0)
         
-        # Apply Gaussian smoothing for better visualization
-        if SCIPY_AVAILABLE:
-            heatmap_resized = gaussian_filter(heatmap_resized, sigma=2)
+        # Normalize to 0-255
+        heatmap_normalized = np.uint8(255 * heatmap_resized)
         
-        # Normalize again after smoothing
-        heatmap_resized = heatmap_resized - heatmap_resized.min()
-        max_val = heatmap_resized.max()
-        if max_val > 0:
-            heatmap_resized = heatmap_resized / max_val
+        # Apply JET colormap (Blue -> Green -> Yellow -> Red)
+        heatmap_colored = cv2.applyColorMap(heatmap_normalized, cv2.COLORMAP_JET)
+        heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
         
-        # Apply colormap
-        if PLT_AVAILABLE:
-            # Use matplotlib colormap for proper red-yellow-blue gradient
-            cmap = plt.cm.get_cmap('jet')
-            heatmap_colored = cmap(heatmap_resized)[:, :, :3]  # RGB only
-            heatmap_colored = (heatmap_colored * 255).astype(np.uint8)
-        elif CV2_AVAILABLE:
-            # Fallback to OpenCV colormap
-            heatmap_uint8 = (heatmap_resized * 255).astype(np.uint8)
-            heatmap_colored = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
-            heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
-        else:
-            # Manual colormap (simple red-blue gradient)
-            heatmap_colored = np.zeros((*img_size, 3), dtype=np.uint8)
-            heatmap_colored[:, :, 0] = (heatmap_resized * 255).astype(np.uint8)  # Red
-            heatmap_colored[:, :, 2] = ((1 - heatmap_resized) * 255).astype(np.uint8)  # Blue
-        
-        # Blend original image with heatmap
-        overlay = (
-            heatmap_colored.astype(np.float32) * alpha +
-            img_array.astype(np.float32) * (1 - alpha)
+        # Blend with original image
+        overlay = cv2.addWeighted(
+            img_array.astype(np.uint8), 1 - intensity,
+            heatmap_colored, intensity,
+            0
         )
-        overlay = np.clip(overlay, 0, 255).astype(np.uint8)
         
         return overlay
     
     except Exception as e:
+        print(f"Overlay error: {e}")
         return None
-
 
 def generate_heatmap_visualization(original_image, model, pred_idx):
     """
-    Generate complete heatmap visualization for the predicted class.
+    Main function to generate GradCAM visualization.
     """
     if model is None or original_image is None:
         return None
     
     try:
-        # Preprocess image
+        # Preprocess image for model
         img_array = preprocess_image(original_image)
         
-        # Compute GradCAM
-        heatmap = compute_gradcam(model, img_array, pred_idx)
+        # Compute GradCAM heatmap
+        heatmap = compute_gradcam_heatmap(model, img_array, pred_idx)
         
         if heatmap is None:
-            return None
+            # Fallback: create a simple activation-based heatmap
+            return create_fallback_heatmap(original_image, model, img_array)
         
-        # Create overlay
-        overlay = create_heatmap_overlay(original_image, heatmap, alpha=0.5)
+        # Create colored overlay
+        overlay = create_heatmap_overlay(original_image, heatmap, intensity=0.5)
         
         return overlay
     
     except Exception as e:
+        print(f"Heatmap generation error: {e}")
+        return None
+
+def create_fallback_heatmap(original_image, model, img_array):
+    """
+    Fallback heatmap using last conv layer activations when GradCAM fails.
+    """
+    try:
+        # Find a conv layer
+        target_layer_name = find_target_layer(model)
+        if target_layer_name is None:
+            return None
+        
+        # Create model to get conv outputs
+        activation_model = tf.keras.Model(
+            inputs=model.input,
+            outputs=model.get_layer(target_layer_name).output
+        )
+        
+        # Get activations
+        activations = activation_model(img_array)
+        
+        # Average across all feature maps
+        heatmap = tf.reduce_mean(activations, axis=-1)[0]
+        
+        # Normalize
+        heatmap = tf.maximum(heatmap, 0)
+        max_val = tf.reduce_max(heatmap)
+        if max_val > 0:
+            heatmap = heatmap / max_val
+        
+        # Create overlay
+        return create_heatmap_overlay(original_image, heatmap.numpy(), intensity=0.5)
+    
+    except Exception as e:
+        print(f"Fallback heatmap error: {e}")
         return None
     
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2063,28 +2155,34 @@ def render_risk_assessment():
         st.session_state.risk_alcohol
     ])
     
-    # Display risk level
+    # Display risk level - integrated look
     if risk_score >= 3:
         st.markdown(f"""
-        <div class="risk-badge risk-badge-high">
-            🚨 {get_text('risk_high')} - {risk_score}/4
+        <div style="background: linear-gradient(135deg, rgba(220,38,38,0.2) 0%, rgba(185,28,28,0.2) 100%); 
+                    border: 1px solid #ef4444; border-radius: 12px; padding: 15px; margin-top: 15px;">
+            <span style="color: #fca5a5; font-weight: 700; font-size: 1rem;">
+                🚨 {get_text('risk_high')} ({risk_score}/4) - {get_text('risk_high_msg')}
+            </span>
         </div>
         """, unsafe_allow_html=True)
-        st.error(get_text('risk_high_msg'))
     elif risk_score >= 1:
         st.markdown(f"""
-        <div class="risk-badge risk-badge-medium">
-            ⚠️ {get_text('risk_medium')} - {risk_score}/4
+        <div style="background: linear-gradient(135deg, rgba(217,119,6,0.2) 0%, rgba(180,83,9,0.2) 100%); 
+                    border: 1px solid #f59e0b; border-radius: 12px; padding: 15px; margin-top: 15px;">
+            <span style="color: #fcd34d; font-weight: 700; font-size: 1rem;">
+                ⚠️ {get_text('risk_medium')} ({risk_score}/4) - {get_text('risk_medium_msg')}
+            </span>
         </div>
         """, unsafe_allow_html=True)
-        st.warning(get_text('risk_medium_msg'))
     else:
         st.markdown(f"""
-        <div class="risk-badge risk-badge-low">
-            ✅ {get_text('risk_low')}
+        <div style="background: linear-gradient(135deg, rgba(22,163,74,0.2) 0%, rgba(21,128,61,0.2) 100%); 
+                    border: 1px solid #22c55e; border-radius: 12px; padding: 15px; margin-top: 15px;">
+            <span style="color: #86efac; font-weight: 700; font-size: 1rem;">
+                ✅ {get_text('risk_low')} - {get_text('risk_low_msg')}
+            </span>
         </div>
         """, unsafe_allow_html=True)
-        st.success(get_text('risk_low_msg'))
     
     st.markdown("</div>", unsafe_allow_html=True)
     
@@ -2109,27 +2207,29 @@ def render_image_input():
         uploaded_file = st.file_uploader(
             get_text('upload_prompt'),
             type=['jpg', 'jpeg', 'png'],
-            key=f"file_uploader_{st.session_state.analysis_counter}",
+            key="file_uploader",
             label_visibility="collapsed"
         )
         
         if uploaded_file is not None:
-            st.session_state.uploaded_image = Image.open(uploaded_file)
+            # Create new image each time
+            new_image = Image.open(uploaded_file)
+            st.session_state.current_image = new_image
             st.session_state.image_source = 'upload'
-            st.session_state.current_image = st.session_state.uploaded_image
+            # Reset analysis when new image uploaded
+            st.session_state.analysis_done = False
+            st.session_state.analysis_result = None
+            st.session_state.heatmap_image = None
     
     with tab2:
         # Camera toggle button
-        col1, col2 = st.columns([1, 1])
-        
-        with col1:
-            if st.button(
-                get_text('camera_disable') if st.session_state.camera_enabled else get_text('camera_enable'),
-                key="camera_toggle",
-                use_container_width=True
-            ):
-                st.session_state.camera_enabled = not st.session_state.camera_enabled
-                st.rerun()
+        if st.button(
+            get_text('camera_disable') if st.session_state.camera_enabled else get_text('camera_enable'),
+            key="camera_toggle",
+            use_container_width=True
+        ):
+            st.session_state.camera_enabled = not st.session_state.camera_enabled
+            st.rerun()
         
         # Show camera only if enabled
         if st.session_state.camera_enabled:
@@ -2137,16 +2237,20 @@ def render_image_input():
             
             camera_image = st.camera_input(
                 get_text('take_photo'),
-                key=f"camera_input_{st.session_state.analysis_counter}",
+                key="camera_input",
                 label_visibility="collapsed"
             )
             
             if camera_image is not None:
-                st.session_state.camera_image = Image.open(camera_image)
+                new_image = Image.open(camera_image)
+                st.session_state.current_image = new_image
                 st.session_state.image_source = 'camera'
-                st.session_state.current_image = st.session_state.camera_image
+                # Reset analysis when new image captured
+                st.session_state.analysis_done = False
+                st.session_state.analysis_result = None
+                st.session_state.heatmap_image = None
         else:
-            st.info(f"👆 {get_text('camera_enable')} to use camera")
+            st.info(f"👆 Click above to enable camera")
     
     st.markdown("</div>", unsafe_allow_html=True)
     
@@ -2158,36 +2262,32 @@ def render_image_input():
         with col2:
             st.image(
                 st.session_state.current_image,
-                caption=f"Source: {st.session_state.image_source}",
                 use_column_width=True
             )
         
-        # Analyze button
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            if st.button(
+        # Analyze and Clear buttons
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col1:
+            analyze_clicked = st.button(
                 get_text('analyze_btn'),
                 key="analyze_button",
                 use_container_width=True,
                 type="primary"
-            ):
-                return True
+            )
         
-        # Clear button
-        with col2:
+        with col3:
             if st.button(
                 get_text('clear_btn'),
                 key="clear_button",
                 use_container_width=True
             ):
                 st.session_state.current_image = None
-                st.session_state.uploaded_image = None
-                st.session_state.camera_image = None
                 st.session_state.analysis_done = False
                 st.session_state.analysis_result = None
                 st.session_state.heatmap_image = None
-                st.session_state.analysis_counter += 1
                 st.rerun()
+        
+        return analyze_clicked
     
     return False
 
@@ -2427,22 +2527,34 @@ def main():
     # Step 3: Analysis
     if should_analyze and st.session_state.current_image is not None:
         with st.spinner(get_text('analyzing')):
+            # Reset previous results
+            st.session_state.analysis_done = False
+            st.session_state.analysis_result = None
+            st.session_state.heatmap_image = None
+            
             # Preprocess and predict
             img_array = preprocess_image(st.session_state.current_image)
             result = predict_image(model, img_array, class_names)
             
             if result is not None:
-                # Generate heatmap
-                heatmap_overlay = generate_heatmap_visualization(
-                    st.session_state.current_image,
-                    model,
-                    result['index']
-                )
-                
-                # Store results
-                st.session_state.analysis_done = True
+                # Store result first
                 st.session_state.analysis_result = result
-                st.session_state.heatmap_image = heatmap_overlay
+                st.session_state.analysis_done = True
+                
+                # Generate heatmap (separate try-catch so it doesn't break analysis)
+                try:
+                    heatmap_overlay = generate_heatmap_visualization(
+                        st.session_state.current_image,
+                        model,
+                        result['index']
+                    )
+                    st.session_state.heatmap_image = heatmap_overlay
+                except Exception as e:
+                    st.session_state.heatmap_image = None
+                    print(f"Heatmap failed: {e}")
+                
+                # Force rerun to show results
+                st.rerun()
     
     # Display results if available
     if st.session_state.analysis_done and st.session_state.analysis_result is not None:
