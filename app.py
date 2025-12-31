@@ -1799,7 +1799,7 @@ def load_class_names():
     return default_classes
 
 def preprocess_image(image, target_size=(224, 224)):
-    """Preprocess image for model prediction"""
+    """Preprocess image for model prediction - matching EfficientNet preprocessing"""
     # Ensure RGB mode
     if image.mode != 'RGB':
         image = image.convert('RGB')
@@ -1807,9 +1807,12 @@ def preprocess_image(image, target_size=(224, 224)):
     # Resize with high quality
     image = image.resize(target_size, Image.Resampling.LANCZOS)
     
-    # Convert to numpy array and normalize
+    # Convert to numpy array
     img_array = np.array(image, dtype=np.float32)
-    img_array = img_array / 255.0
+    
+    # EfficientNet preprocessing: scale to [-1, 1] range
+    # This is equivalent to tf.keras.applications.efficientnet.preprocess_input
+    img_array = (img_array / 127.5) - 1.0
     
     # Add batch dimension
     img_array = np.expand_dims(img_array, axis=0)
@@ -1875,25 +1878,37 @@ def compute_gradcam_heatmap(model, img_array, pred_index):
         return None
     
     try:
-        # Find target layer - look for conv layers in EfficientNet
+        # Find the last conv layer in EfficientNet
+        # Common names: 'top_conv', 'block7a_project_conv', etc.
         target_layer_name = None
-        for layer in reversed(model.layers):
-            if 'conv' in layer.name.lower() and 'bn' not in layer.name.lower():
-                target_layer_name = layer.name
-                break
         
-        if target_layer_name is None:
-            # Try to find top_conv in EfficientNet
+        # Priority order for finding conv layers
+        priority_names = ['top_conv', 'block7a', 'block6d', 'block6c']
+        
+        for priority in priority_names:
             for layer in model.layers:
-                if 'top_conv' in layer.name.lower():
+                if priority in layer.name.lower() and 'conv' in layer.name.lower():
                     target_layer_name = layer.name
                     break
+            if target_layer_name:
+                break
+        
+        # Fallback: find any conv layer with 4D output
+        if target_layer_name is None:
+            for layer in reversed(model.layers):
+                if hasattr(layer, 'output'):
+                    try:
+                        if len(layer.output.shape) == 4 and 'conv' in layer.name.lower():
+                            target_layer_name = layer.name
+                            break
+                    except:
+                        continue
         
         if target_layer_name is None:
-            print("No conv layer found")
+            print("No suitable conv layer found for GradCAM")
             return None
         
-        print(f"Using layer: {target_layer_name}")
+        print(f"GradCAM using layer: {target_layer_name}")
         
         # Create gradient model
         target_layer = model.get_layer(target_layer_name)
@@ -1902,7 +1917,7 @@ def compute_gradcam_heatmap(model, img_array, pred_index):
             outputs=[target_layer.output, model.output]
         )
         
-        # Convert to tensor and enable gradient tracking
+        # Convert to tensor
         img_tensor = tf.cast(img_array, tf.float32)
         
         # Compute gradients
@@ -1911,39 +1926,42 @@ def compute_gradcam_heatmap(model, img_array, pred_index):
             conv_output, predictions = gradient_model(img_tensor, training=False)
             class_output = predictions[:, pred_index]
         
-        # Get gradients
+        # Get gradients of the predicted class with respect to conv output
         grads = tape.gradient(class_output, conv_output)
         
         if grads is None:
-            print("Gradients are None")
+            print("Gradients are None - model might not be differentiable")
             return None
         
-        # Global average pooling of gradients
+        # Global average pooling of gradients (importance weights)
         pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
         
-        # Get conv output for this image
+        # Get conv output and remove batch dimension
         conv_output = conv_output[0]
         
-        # Weight each channel by gradient importance
+        # Weight each feature map by its importance
         heatmap = tf.reduce_sum(conv_output * pooled_grads, axis=-1)
         
-        # ReLU to keep only positive influence
-        heatmap = tf.nn.relu(heatmap)
+        # Apply ReLU to keep only positive influences
+        heatmap = tf.maximum(heatmap, 0)
         
-        # Normalize
-        heatmap = heatmap / (tf.reduce_max(heatmap) + 1e-8)
+        # Normalize to 0-1 range
+        max_val = tf.reduce_max(heatmap)
+        if max_val > 0:
+            heatmap = heatmap / max_val
         
         return heatmap.numpy()
     
     except Exception as e:
-        print(f"GradCAM error: {e}")
+        print(f"GradCAM computation error: {e}")
         import traceback
         traceback.print_exc()
         return None
 
-def create_heatmap_overlay(original_image, heatmap, intensity=0.5):
+def create_heatmap_overlay(original_image, heatmap, intensity=0.6):
     """
     Create a colored heatmap overlay on the original image.
+    Uses JET colormap: Blue (low) -> Green -> Yellow -> Red (high)
     """
     if heatmap is None:
         return None
@@ -1956,29 +1974,39 @@ def create_heatmap_overlay(original_image, heatmap, intensity=0.5):
         if img.mode != 'RGB':
             img = img.convert('RGB')
         img = img.resize(img_size, Image.Resampling.LANCZOS)
-        img_array = np.array(img)
+        img_array = np.array(img, dtype=np.float32)
         
-        # Resize heatmap
+        # Resize heatmap to image size
         heatmap_resized = cv2.resize(heatmap.astype(np.float32), img_size)
         
-        # Smooth the heatmap
-        heatmap_resized = cv2.GaussianBlur(heatmap_resized, (21, 21), 0)
+        # Apply Gaussian blur for smoothing
+        heatmap_resized = cv2.GaussianBlur(heatmap_resized, (15, 15), 0)
         
-        # Normalize to 0-1
+        # Normalize to 0-1 range
         heatmap_min = heatmap_resized.min()
         heatmap_max = heatmap_resized.max()
-        if heatmap_max - heatmap_min > 0:
-            heatmap_resized = (heatmap_resized - heatmap_min) / (heatmap_max - heatmap_min)
+        if heatmap_max - heatmap_min > 1e-8:
+            heatmap_normalized = (heatmap_resized - heatmap_min) / (heatmap_max - heatmap_min)
+        else:
+            heatmap_normalized = np.zeros_like(heatmap_resized)
         
-        # Convert to 0-255 for colormap
-        heatmap_uint8 = np.uint8(255 * heatmap_resized)
+        # Convert to uint8 for colormap (0-255)
+        heatmap_uint8 = np.uint8(255 * heatmap_normalized)
         
-        # Apply colormap
+        # Apply JET colormap (Blue->Cyan->Green->Yellow->Red)
         heatmap_colored = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
+        
+        # Convert BGR to RGB (OpenCV uses BGR)
         heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
         
-        # Blend
-        overlay = np.uint8(img_array * (1 - intensity) + heatmap_colored * intensity)
+        # Create alpha mask based on heatmap intensity
+        # This makes low attention areas more transparent
+        alpha = np.expand_dims(heatmap_normalized, axis=-1)
+        alpha = np.clip(alpha * 1.5, 0, 1)  # Boost alpha slightly
+        
+        # Blend: original * (1-alpha*intensity) + heatmap * (alpha*intensity)
+        overlay = img_array * (1 - alpha * intensity) + heatmap_colored * (alpha * intensity)
+        overlay = np.clip(overlay, 0, 255).astype(np.uint8)
         
         return overlay
     
@@ -2121,18 +2149,23 @@ def render_sidebar():
         st.markdown(f"### 🎯 {get_text('conditions')}")
         
         conditions = [
-            ("🔴", get_text('disease_Oral_Cancer')),
-            ("🟠", get_text('disease_Ulcers')),
-            ("🟠", get_text('disease_Gingivitis')),
-            ("🟠", get_text('disease_Caries')),
-            ("🟢", get_text('disease_Calculus')),
-            ("🟢", get_text('disease_Tooth Discoloration')),
-            ("🟢", get_text('disease_Hypodontia')),
-            ("🟢", get_text('disease_Normal_Mouth'))
+            ("dot-red", "Oral Cancer"),
+            ("dot-orange", "Mouth Ulcers"),
+            ("dot-orange", "Gingivitis (Gum Disease)"),
+            ("dot-orange", "Dental Caries"),
+            ("dot-green", "Calculus"),
+            ("dot-green", "Tooth Discoloration"),
+            ("dot-green", "Hypodontia"),
+            ("dot-green", "Healthy Mouth")
         ]
         
-        for dot, name in conditions:
-            st.markdown(f"{dot} {name}")
+        for dot_class, name in conditions:
+            st.markdown(f"""
+            <div class="condition-item">
+                <span class="condition-dot {dot_class}"></span>
+                <span>{name}</span>
+            </div>
+            """, unsafe_allow_html=True)
         
         st.markdown("---")
         
