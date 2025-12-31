@@ -1483,11 +1483,12 @@ CUSTOM_CSS = """
     }
     
     .sidebar-metric-value {
-        font-size: 1.8rem;
+        font-size: 1.5rem;
         font-weight: 800;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
+        word-break: break-word;
     }
     
     .sidebar-metric-label {
@@ -2267,20 +2268,23 @@ def render_image_input():
         
         # Analyze and Clear buttons
         col1, col2, col3 = st.columns([1, 1, 1])
+        
         with col1:
             analyze_clicked = st.button(
-                get_text('analyze_btn'),
+                f"🔍 {get_text('analyze_btn')}",
                 key="analyze_button",
                 use_container_width=True,
                 type="primary"
             )
         
         with col3:
-            if st.button(
-                get_text('clear_btn'),
+            clear_clicked = st.button(
+                f"🗑️ {get_text('clear_btn')}",
                 key="clear_button",
                 use_container_width=True
-            ):
+            )
+            
+            if clear_clicked:
                 st.session_state.current_image = None
                 st.session_state.analysis_done = False
                 st.session_state.analysis_result = None
@@ -2524,24 +2528,19 @@ def main():
     st.markdown("---")
     should_analyze = render_image_input()
     
-    # Step 3: Analysis
+    # Step 3: Analysis - runs when button is clicked
     if should_analyze and st.session_state.current_image is not None:
         with st.spinner(get_text('analyzing')):
-            # Reset previous results
-            st.session_state.analysis_done = False
-            st.session_state.analysis_result = None
-            st.session_state.heatmap_image = None
-            
             # Preprocess and predict
             img_array = preprocess_image(st.session_state.current_image)
             result = predict_image(model, img_array, class_names)
             
             if result is not None:
-                # Store result first
+                # Store results in session state
                 st.session_state.analysis_result = result
                 st.session_state.analysis_done = True
                 
-                # Generate heatmap (separate try-catch so it doesn't break analysis)
+                # Generate heatmap
                 try:
                     heatmap_overlay = generate_heatmap_visualization(
                         st.session_state.current_image,
@@ -2549,14 +2548,10 @@ def main():
                         result['index']
                     )
                     st.session_state.heatmap_image = heatmap_overlay
-                except Exception as e:
+                except:
                     st.session_state.heatmap_image = None
-                    print(f"Heatmap failed: {e}")
-                
-                # Force rerun to show results
-                st.rerun()
     
-    # Display results if available
+    # Step 4: Display results if analysis is done
     if st.session_state.analysis_done and st.session_state.analysis_result is not None:
         st.markdown("---")
         render_results(
