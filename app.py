@@ -1824,10 +1824,17 @@ def predict_image(model, img_array, class_names):
     # Get predictions
     predictions = model.predict(img_array, verbose=0)
     
+    # Debug: print raw predictions
+    print(f"Raw predictions: {predictions[0]}")
+    print(f"Class names: {class_names}")
+    
     # Get top prediction
     pred_idx = int(np.argmax(predictions[0]))
     pred_class = class_names[pred_idx]
     confidence = float(predictions[0][pred_idx]) * 100
+    
+    # Debug: print result
+    print(f"Predicted: {pred_class} (index {pred_idx}) with {confidence}% confidence")
     
     # Get all scores
     all_scores = {}
@@ -1868,10 +1875,25 @@ def compute_gradcam_heatmap(model, img_array, pred_index):
         return None
     
     try:
-        # Find target layer
-        target_layer_name = find_target_layer(model)
+        # Find target layer - look for conv layers in EfficientNet
+        target_layer_name = None
+        for layer in reversed(model.layers):
+            if 'conv' in layer.name.lower() and 'bn' not in layer.name.lower():
+                target_layer_name = layer.name
+                break
+        
         if target_layer_name is None:
+            # Try to find top_conv in EfficientNet
+            for layer in model.layers:
+                if 'top_conv' in layer.name.lower():
+                    target_layer_name = layer.name
+                    break
+        
+        if target_layer_name is None:
+            print("No conv layer found")
             return None
+        
+        print(f"Using layer: {target_layer_name}")
         
         # Create gradient model
         target_layer = model.get_layer(target_layer_name)
@@ -1880,73 +1902,83 @@ def compute_gradcam_heatmap(model, img_array, pred_index):
             outputs=[target_layer.output, model.output]
         )
         
+        # Convert to tensor and enable gradient tracking
+        img_tensor = tf.cast(img_array, tf.float32)
+        
         # Compute gradients
         with tf.GradientTape() as tape:
-            conv_output, predictions = gradient_model(img_array)
-            loss = predictions[:, pred_index]
+            tape.watch(img_tensor)
+            conv_output, predictions = gradient_model(img_tensor, training=False)
+            class_output = predictions[:, pred_index]
         
-        # Get gradients of the target class with respect to conv layer output
-        grads = tape.gradient(loss, conv_output)
+        # Get gradients
+        grads = tape.gradient(class_output, conv_output)
         
         if grads is None:
+            print("Gradients are None")
             return None
         
         # Global average pooling of gradients
         pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
         
-        # Weight the conv output by importance
+        # Get conv output for this image
         conv_output = conv_output[0]
-        heatmap = conv_output @ pooled_grads[..., tf.newaxis]
-        heatmap = tf.squeeze(heatmap)
         
-        # ReLU and normalize
-        heatmap = tf.maximum(heatmap, 0)
-        max_val = tf.reduce_max(heatmap)
-        if max_val > 0:
-            heatmap = heatmap / max_val
+        # Weight each channel by gradient importance
+        heatmap = tf.reduce_sum(conv_output * pooled_grads, axis=-1)
+        
+        # ReLU to keep only positive influence
+        heatmap = tf.nn.relu(heatmap)
+        
+        # Normalize
+        heatmap = heatmap / (tf.reduce_max(heatmap) + 1e-8)
         
         return heatmap.numpy()
     
     except Exception as e:
         print(f"GradCAM error: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
-def create_heatmap_overlay(original_image, heatmap, intensity=0.6):
+def create_heatmap_overlay(original_image, heatmap, intensity=0.5):
     """
     Create a colored heatmap overlay on the original image.
-    Uses jet colormap: Blue (low) -> Green -> Yellow -> Red (high)
     """
     if heatmap is None:
         return None
     
     try:
-        # Resize image to standard size
         img_size = (224, 224)
+        
+        # Prepare original image
         img = original_image.copy()
         if img.mode != 'RGB':
             img = img.convert('RGB')
         img = img.resize(img_size, Image.Resampling.LANCZOS)
-        img_array = np.array(img, dtype=np.float32)
+        img_array = np.array(img)
         
-        # Resize heatmap to image size
+        # Resize heatmap
         heatmap_resized = cv2.resize(heatmap.astype(np.float32), img_size)
         
-        # Apply Gaussian blur for smoother visualization
-        heatmap_resized = cv2.GaussianBlur(heatmap_resized, (15, 15), 0)
+        # Smooth the heatmap
+        heatmap_resized = cv2.GaussianBlur(heatmap_resized, (21, 21), 0)
         
-        # Normalize to 0-255
-        heatmap_normalized = np.uint8(255 * heatmap_resized)
+        # Normalize to 0-1
+        heatmap_min = heatmap_resized.min()
+        heatmap_max = heatmap_resized.max()
+        if heatmap_max - heatmap_min > 0:
+            heatmap_resized = (heatmap_resized - heatmap_min) / (heatmap_max - heatmap_min)
         
-        # Apply JET colormap (Blue -> Green -> Yellow -> Red)
-        heatmap_colored = cv2.applyColorMap(heatmap_normalized, cv2.COLORMAP_JET)
+        # Convert to 0-255 for colormap
+        heatmap_uint8 = np.uint8(255 * heatmap_resized)
+        
+        # Apply colormap
+        heatmap_colored = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
         heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
         
-        # Blend with original image
-        overlay = cv2.addWeighted(
-            img_array.astype(np.uint8), 1 - intensity,
-            heatmap_colored, intensity,
-            0
-        )
+        # Blend
+        overlay = np.uint8(img_array * (1 - intensity) + heatmap_colored * intensity)
         
         return overlay
     
@@ -2271,7 +2303,7 @@ def render_image_input():
         
         with col1:
             analyze_clicked = st.button(
-                f"🔍 {get_text('analyze_btn')}",
+                get_text('analyze_btn'),
                 key="analyze_button",
                 use_container_width=True,
                 type="primary"
@@ -2279,7 +2311,7 @@ def render_image_input():
         
         with col3:
             clear_clicked = st.button(
-                f"🗑️ {get_text('clear_btn')}",
+                get_text('clear_btn'),
                 key="clear_button",
                 use_container_width=True
             )
@@ -2514,6 +2546,8 @@ def main():
     # Load model
     model = load_model()
     class_names = load_class_names()
+    
+    print(f"Loaded class names: {class_names}")
     
     # Check model
     if model is None:
