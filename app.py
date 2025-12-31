@@ -1799,7 +1799,10 @@ def load_class_names():
     return default_classes
 
 def preprocess_image(image, target_size=(224, 224)):
-    """Preprocess image for model prediction - matching EfficientNet preprocessing"""
+    """
+    Preprocess image for EfficientNetB0 model prediction.
+    CRITICAL: Must match training preprocessing exactly.
+    """
     # Ensure RGB mode
     if image.mode != 'RGB':
         image = image.convert('RGB')
@@ -1810,9 +1813,15 @@ def preprocess_image(image, target_size=(224, 224)):
     # Convert to numpy array
     img_array = np.array(image, dtype=np.float32)
     
-    # EfficientNet preprocessing: scale to [-1, 1] range
-    # This is equivalent to tf.keras.applications.efficientnet.preprocess_input
-    img_array = (img_array / 127.5) - 1.0
+    # ═══════════════════════════════════════════════════════════════════════
+    # OPTION 1: Simple 0-1 scaling (most common with ImageDataGenerator)
+    # If this doesn't work, try OPTION 2 below
+    # ═══════════════════════════════════════════════════════════════════════
+    img_array = img_array / 255.0
+    
+    # OPTION 2: EfficientNet preprocessing (scales to [-1, 1])
+    # Uncomment below and comment OPTION 1 if needed
+    # img_array = (img_array / 127.5) - 1.0
     
     # Add batch dimension
     img_array = np.expand_dims(img_array, axis=0)
@@ -1820,36 +1829,56 @@ def preprocess_image(image, target_size=(224, 224)):
     return img_array
 
 def predict_image(model, img_array, class_names):
-    """Run prediction on preprocessed image"""
+    """Run prediction with detailed debugging output"""
     if model is None:
         return None
     
-    # Get predictions
-    predictions = model.predict(img_array, verbose=0)
-    
-    # Debug: print raw predictions
-    print(f"Raw predictions: {predictions[0]}")
-    print(f"Class names: {class_names}")
-    
-    # Get top prediction
-    pred_idx = int(np.argmax(predictions[0]))
-    pred_class = class_names[pred_idx]
-    confidence = float(predictions[0][pred_idx]) * 100
-    
-    # Debug: print result
-    print(f"Predicted: {pred_class} (index {pred_idx}) with {confidence}% confidence")
-    
-    # Get all scores
-    all_scores = {}
-    for i, class_name in enumerate(class_names):
-        all_scores[class_name] = float(predictions[0][i]) * 100
-    
-    return {
-        'class': pred_class,
-        'index': pred_idx,
-        'confidence': confidence,
-        'all_scores': all_scores
-    }
+    try:
+        # Get predictions
+        predictions = model.predict(img_array, verbose=0)
+        pred_values = predictions[0]
+        
+        # Debug output
+        print("=" * 60)
+        print("PREDICTION DEBUG:")
+        print(f"Raw values: {pred_values}")
+        print(f"Sum: {np.sum(pred_values):.4f}, Std: {np.std(pred_values):.6f}")
+        
+        # Warning check
+        if np.std(pred_values) < 0.01:
+            print("WARNING: Low variance in predictions!")
+            print("This means preprocessing doesn't match training.")
+            print("Try switching OPTION 1 <-> OPTION 2 in preprocess_image()")
+        
+        # Get top prediction
+        pred_idx = int(np.argmax(pred_values))
+        pred_class = class_names[pred_idx]
+        confidence = float(pred_values[pred_idx]) * 100
+        
+        # Get all scores
+        all_scores = {}
+        for i, class_name in enumerate(class_names):
+            all_scores[class_name] = float(pred_values[i]) * 100
+        
+        # Print sorted predictions
+        sorted_scores = sorted(all_scores.items(), key=lambda x: x[1], reverse=True)
+        print("Predictions (sorted):")
+        for name, score in sorted_scores:
+            marker = " <--" if name == pred_class else ""
+            print(f"  {name}: {score:.2f}%{marker}")
+        print("=" * 60)
+        
+        return {
+            'class': pred_class,
+            'index': pred_idx,
+            'confidence': confidence,
+            'all_scores': all_scores
+        }
+    except Exception as e:
+        print(f"Prediction error: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SECTION 8: ROBUST GRADCAM HEATMAP IMPLEMENTATION
@@ -1878,37 +1907,25 @@ def compute_gradcam_heatmap(model, img_array, pred_index):
         return None
     
     try:
-        # Find the last conv layer in EfficientNet
-        # Common names: 'top_conv', 'block7a_project_conv', etc.
+        # Find target layer - look for conv layers in EfficientNet
         target_layer_name = None
-        
-        # Priority order for finding conv layers
-        priority_names = ['top_conv', 'block7a', 'block6d', 'block6c']
-        
-        for priority in priority_names:
-            for layer in model.layers:
-                if priority in layer.name.lower() and 'conv' in layer.name.lower():
-                    target_layer_name = layer.name
-                    break
-            if target_layer_name:
+        for layer in reversed(model.layers):
+            if 'conv' in layer.name.lower() and 'bn' not in layer.name.lower():
+                target_layer_name = layer.name
                 break
         
-        # Fallback: find any conv layer with 4D output
         if target_layer_name is None:
-            for layer in reversed(model.layers):
-                if hasattr(layer, 'output'):
-                    try:
-                        if len(layer.output.shape) == 4 and 'conv' in layer.name.lower():
-                            target_layer_name = layer.name
-                            break
-                    except:
-                        continue
+            # Try to find top_conv in EfficientNet
+            for layer in model.layers:
+                if 'top_conv' in layer.name.lower():
+                    target_layer_name = layer.name
+                    break
         
         if target_layer_name is None:
-            print("No suitable conv layer found for GradCAM")
+            print("No conv layer found")
             return None
         
-        print(f"GradCAM using layer: {target_layer_name}")
+        print(f"Using layer: {target_layer_name}")
         
         # Create gradient model
         target_layer = model.get_layer(target_layer_name)
@@ -1917,7 +1934,7 @@ def compute_gradcam_heatmap(model, img_array, pred_index):
             outputs=[target_layer.output, model.output]
         )
         
-        # Convert to tensor
+        # Convert to tensor and enable gradient tracking
         img_tensor = tf.cast(img_array, tf.float32)
         
         # Compute gradients
@@ -1926,42 +1943,40 @@ def compute_gradcam_heatmap(model, img_array, pred_index):
             conv_output, predictions = gradient_model(img_tensor, training=False)
             class_output = predictions[:, pred_index]
         
-        # Get gradients of the predicted class with respect to conv output
+        # Get gradients
         grads = tape.gradient(class_output, conv_output)
         
         if grads is None:
-            print("Gradients are None - model might not be differentiable")
+            print("Gradients are None")
             return None
         
-        # Global average pooling of gradients (importance weights)
+        # Global average pooling of gradients
         pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
         
-        # Get conv output and remove batch dimension
+        # Get conv output for this image
         conv_output = conv_output[0]
         
-        # Weight each feature map by its importance
+        # Weight each channel by gradient importance
         heatmap = tf.reduce_sum(conv_output * pooled_grads, axis=-1)
         
-        # Apply ReLU to keep only positive influences
-        heatmap = tf.maximum(heatmap, 0)
+        # ReLU to keep only positive influence
+        heatmap = tf.nn.relu(heatmap)
         
-        # Normalize to 0-1 range
-        max_val = tf.reduce_max(heatmap)
-        if max_val > 0:
-            heatmap = heatmap / max_val
+        # Normalize
+        heatmap = heatmap / (tf.reduce_max(heatmap) + 1e-8)
         
         return heatmap.numpy()
     
     except Exception as e:
-        print(f"GradCAM computation error: {e}")
+        print(f"GradCAM error: {e}")
         import traceback
         traceback.print_exc()
         return None
 
-def create_heatmap_overlay(original_image, heatmap, intensity=0.6):
+def create_heatmap_overlay(original_image, heatmap, intensity=0.5):
     """
-    Create a colored heatmap overlay on the original image.
-    Uses JET colormap: Blue (low) -> Green -> Yellow -> Red (high)
+    Create a colored heatmap overlay using JET colormap.
+    Blue (low attention) -> Green -> Yellow -> Red (high attention)
     """
     if heatmap is None:
         return None
@@ -1976,39 +1991,38 @@ def create_heatmap_overlay(original_image, heatmap, intensity=0.6):
         img = img.resize(img_size, Image.Resampling.LANCZOS)
         img_array = np.array(img, dtype=np.float32)
         
-        # Resize heatmap to image size
+        # Resize heatmap
         heatmap_resized = cv2.resize(heatmap.astype(np.float32), img_size)
         
-        # Apply Gaussian blur for smoothing
+        # Smooth the heatmap
         heatmap_resized = cv2.GaussianBlur(heatmap_resized, (15, 15), 0)
         
-        # Normalize to 0-1 range
+        # Normalize to 0-1
         heatmap_min = heatmap_resized.min()
         heatmap_max = heatmap_resized.max()
+        
         if heatmap_max - heatmap_min > 1e-8:
             heatmap_normalized = (heatmap_resized - heatmap_min) / (heatmap_max - heatmap_min)
         else:
-            heatmap_normalized = np.zeros_like(heatmap_resized)
+            return np.uint8(img_array)
         
-        # Convert to uint8 for colormap (0-255)
+        # Convert to uint8 for colormap
         heatmap_uint8 = np.uint8(255 * heatmap_normalized)
         
-        # Apply JET colormap (Blue->Cyan->Green->Yellow->Red)
+        # Apply JET colormap
         heatmap_colored = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
         
-        # Convert BGR to RGB (OpenCV uses BGR)
+        # CRITICAL: Convert BGR to RGB (OpenCV uses BGR)
         heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
         
-        # Create alpha mask based on heatmap intensity
-        # This makes low attention areas more transparent
-        alpha = np.expand_dims(heatmap_normalized, axis=-1)
-        alpha = np.clip(alpha * 1.5, 0, 1)  # Boost alpha slightly
-        
-        # Blend: original * (1-alpha*intensity) + heatmap * (alpha*intensity)
-        overlay = img_array * (1 - alpha * intensity) + heatmap_colored * (alpha * intensity)
-        overlay = np.clip(overlay, 0, 255).astype(np.uint8)
+        # Blend
+        overlay = np.uint8(img_array * (1 - intensity) + heatmap_colored * intensity)
         
         return overlay
+    
+    except Exception as e:
+        print(f"Heatmap error: {e}")
+        return None
     
     except Exception as e:
         print(f"Overlay error: {e}")
@@ -2148,24 +2162,15 @@ def render_sidebar():
         # Detectable Conditions
         st.markdown(f"### 🎯 {get_text('conditions')}")
         
-        conditions = [
-            ("dot-red", "Oral Cancer"),
-            ("dot-orange", "Mouth Ulcers"),
-            ("dot-orange", "Gingivitis (Gum Disease)"),
-            ("dot-orange", "Dental Caries"),
-            ("dot-green", "Calculus"),
-            ("dot-green", "Tooth Discoloration"),
-            ("dot-green", "Hypodontia"),
-            ("dot-green", "Healthy Mouth")
-        ]
-        
-        for dot_class, name in conditions:
-            st.markdown(f"""
-            <div class="condition-item">
-                <span class="condition-dot {dot_class}"></span>
-                <span>{name}</span>
-            </div>
-            """, unsafe_allow_html=True)
+        # Fixed: Simple text without duplicate emojis
+        st.markdown("🔴 Oral Cancer")
+        st.markdown("🟠 Mouth Ulcers")
+        st.markdown("🟠 Gingivitis")
+        st.markdown("🟠 Dental Caries")
+        st.markdown("🟢 Calculus")
+        st.markdown("🟢 Tooth Discoloration")
+        st.markdown("🟢 Hypodontia")
+        st.markdown("🟢 Healthy Mouth")
         
         st.markdown("---")
         
