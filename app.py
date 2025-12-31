@@ -1801,7 +1801,7 @@ def load_class_names():
 def preprocess_image(image, target_size=(224, 224)):
     """
     Preprocess image for EfficientNetB0 model prediction.
-    CRITICAL: Must match training preprocessing exactly.
+    Must match training: rescale=1./255
     """
     # Ensure RGB mode
     if image.mode != 'RGB':
@@ -1813,8 +1813,8 @@ def preprocess_image(image, target_size=(224, 224)):
     # Convert to numpy array
     img_array = np.array(image, dtype=np.float32)
     
-    # OPTION 2: EfficientNet preprocessing (scales to [-1, 1])
-    img_array = (img_array / 127.5) - 1.0
+    # Match training preprocessing: rescale=1./255
+    img_array = img_array / 255.0
     
     # Add batch dimension
     img_array = np.expand_dims(img_array, axis=0)
@@ -2576,6 +2576,16 @@ def main():
     
     # Load model
     model = load_model()
+    if model is not None:
+        print("MODEL DIAGNOSTIC:")
+        print(f"  Input shape: {model.input_shape}")
+        print(f"  Output shape: {model.output_shape}")
+        # Test with random data
+        test_input = np.random.rand(1, 224, 224, 3).astype(np.float32)
+        test_output = model.predict(test_input, verbose=0)
+        print(f"  Random test output: {test_output[0]}")
+        print(f"  Output sum: {np.sum(test_output[0])}")
+        print(f"  Output std: {np.std(test_output[0])}")
     class_names = load_class_names()
     
     print(f"Loaded class names: {class_names}")
