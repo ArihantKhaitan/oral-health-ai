@@ -1813,15 +1813,8 @@ def preprocess_image(image, target_size=(224, 224)):
     # Convert to numpy array
     img_array = np.array(image, dtype=np.float32)
     
-    # ═══════════════════════════════════════════════════════════════════════
-    # OPTION 1: Simple 0-1 scaling (most common with ImageDataGenerator)
-    # If this doesn't work, try OPTION 2 below
-    # ═══════════════════════════════════════════════════════════════════════
-    img_array = img_array / 255.0
-    
     # OPTION 2: EfficientNet preprocessing (scales to [-1, 1])
-    # Uncomment below and comment OPTION 1 if needed
-    # img_array = (img_array / 127.5) - 1.0
+    img_array = (img_array / 127.5) - 1.0
     
     # Add batch dimension
     img_array = np.expand_dims(img_array, axis=0)
