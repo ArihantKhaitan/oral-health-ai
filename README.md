@@ -1,15 +1,3 @@
----
-title: Oral Health AI
-emoji: 🦷
-colorFrom: blue
-colorTo: green
-sdk: streamlit
-sdk_version: 1.29.0
-app_file: app.py
-pinned: false
-license: mit
----
-
 # 🦷 Oral Health AI - Early Detection Saves Lives
 
 <div align="center">
